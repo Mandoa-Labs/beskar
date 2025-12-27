@@ -1,4 +1,4 @@
-
+use std::io;
 use clap::{Parser, Subcommand};
 
 /// Main CLI application
@@ -34,6 +34,15 @@ fn main() {
     match cli.command {
         Commands::Db { create, drop, list } => {
             if create {
+                println!("Please enter some text:");
+
+                let mut input_text = String::new(); // Create a new, mutable, empty string
+
+                io::stdin()
+                 .read_line(&mut input_text) // Read the line and append it to the string
+                 .expect("Failed to read line"); // Basic error handling
+
+                println!("You entered: {}", input_text);
                 println!("Creating database...");
                 // create_db();
             }
