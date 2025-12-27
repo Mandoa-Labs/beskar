@@ -17,6 +17,7 @@
 *.bak
 *.tmp
 *.orig
+.*.sw?
 
 # IDE and Editor files
 # VSCode
@@ -35,14 +36,7 @@
 .classpath
 .settings/
 
-# Vim
-*.swp
-*.swo
-*~
-.*.sw?
-
 # Emacs
-*~
 \#*\#
 .\#*
 
@@ -63,7 +57,6 @@ Desktop.ini
 $RECYCLE.BIN/
 
 # Linux
-*~
 .directory
 .Trash-*
 
