@@ -3,17 +3,14 @@
 **/*.rs.bk
 *.pdb
 
-# Cargo.lock should be committed for binaries but not libraries
-# Keeping it for now as this appears to be a binary project
-# Cargo.lock
+# Cargo.lock is committed for binary projects
+# This is a binary project, so we keep Cargo.lock tracked
 
 # Generated documentation
 /doc/
 
 # Backup files
 *~
-*.swp
-*.swo
 *.bak
 *.tmp
 *.orig
@@ -37,8 +34,8 @@
 .settings/
 
 # Emacs
-\#*\#
-.\#*
+#*#
+.#*
 
 # Sublime Text
 *.sublime-project
