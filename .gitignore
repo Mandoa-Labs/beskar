@@ -1,0 +1,87 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock is committed for binary projects
+# This is a binary project, so we keep Cargo.lock tracked
+
+# Generated documentation
+/doc/
+
+# Backup files
+*~
+*.bak
+*.tmp
+*.orig
+.*.sw?
+
+# IDE and Editor files
+# VSCode
+.vscode/
+*.code-workspace
+
+# IntelliJ IDEA / CLion / RustRover
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+
+# Eclipse
+.project
+.classpath
+.settings/
+
+# Emacs
+\#*\#
+.#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+.Trash-*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Database files (if any local test databases)
+*.db
+*.sqlite
+*.sqlite3
+
+# Log files
+*.log
+
+# Test coverage
+*.profraw
+*.profdata
+/coverage/
+tarpaulin-report.html
+
+# Benchmarking
+/benches/results/
+
+# CI/CD
+.travis.yml.bak
+
+# Temporary files
+/tmp/
+/temp/
