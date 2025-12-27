@@ -1,0 +1,9 @@
+[package]
+name = "vectordb"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.37", features = ["full"] }
+tokio-postgres = "0.7"
+anyhow = "1.0"
