@@ -1,31 +1,56 @@
-use anyhow::Result;
-mod vectordb;
 
-use vectordb::VectorDB;
+use clap::{Parser, Subcommand};
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let db = VectorDB::new(
-        "vectordb",
-        "postgres",
-        "postgres",
-        "localhost",
-        "5432",
-    )
-    .await?;
+/// Main CLI application
+#[derive(Parser)]
+#[command(name = "main")]
+#[command(about = "Example Rust CLI with subcommands and flags")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    db.init_db(1536).await?;
+#[derive(Subcommand)]
+enum Commands {
+    /// Database related commands
+    Db {
+        /// Create the database
+        #[arg(long)]
+        create: bool,
 
-    let embedding = "[0.01, 0.02, 0.03]"; // pgvector expects text array
-    db.insert_document("Hello Vector World", embedding).await?;
+        /// Drop the database
+        #[arg(long)]
+        drop: bool,
 
-    let results = db.search_similar(embedding, 5).await?;
-    for (id, content, distance, similarity) in results {
-        println!(
-            "ID: {}, Content: {}, Distance: {}, Similarity: {}",
-            id, content, distance, similarity
-        );
+        /// List databases
+        #[arg(long)]
+        list: bool,
+    },
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Db { create, drop, list } => {
+            if create {
+                println!("Creating database...");
+                // create_db();
+            }
+
+            if drop {
+                println!("Dropping database...");
+                // drop_db();
+            }
+
+            if list {
+                println!("Listing databases...");
+                // list_dbs();
+            }
+
+            if !create && !drop && !list {
+                eprintln!("No flag provided. Use --help for options.");
+            }
+        }
     }
-
-    Ok(())
 }
