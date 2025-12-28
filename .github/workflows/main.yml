@@ -24,3 +24,6 @@ jobs:
         run: |
           echo "Platform: ${{ matrix.platform.name }}"
           echo "Target:   ${{ matrix.platform.target }}"
+
+      - name: Cargo build
+        run: cargo build
