@@ -1,0 +1,14 @@
+name: Hello World
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest-arm64
+    steps:
+    - uses: actions/checkout@v4
+    - run: echo "Running on ARM64"
