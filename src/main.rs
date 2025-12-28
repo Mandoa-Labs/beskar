@@ -12,7 +12,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Database related commands
+    Init,
     Db {
         /// Create the database
         #[arg(long)]
@@ -32,6 +32,9 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Init => {
+            println!("Initializing new project...");
+        },
         Commands::Db { create, drop, list } => {
             if create {
                 println!("Please enter some text:");
