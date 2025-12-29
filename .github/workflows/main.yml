@@ -51,7 +51,7 @@ jobs:
       - name: Cargo build
         run: |
           cargo build --target ${{ matrix.platform.target }}
-          ls ./target/release
+          ls -R ./target/
 
       - name: Build .deb package
         run: |
