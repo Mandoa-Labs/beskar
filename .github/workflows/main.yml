@@ -6,9 +6,10 @@ on:
 jobs:
   build:
     name: Build - ${{ matrix.platform.name }}
-    runs-on: ${{ matrix.platform.runner}}"
+    runs-on: ${{ matrix.platform.runner }}
 
     strategy:
+      fail-fast: false
       matrix:
         platform:
           - name: Linux x86_64
@@ -16,16 +17,24 @@ jobs:
             target: x86_64-unknown-linux-gnu
 
           - name: Linux aarch64
-            runner: ubuntu-22.04-arm
+            runner: ubuntu-22.04-arm64
             target: aarch64-unknown-linux-gnu
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.platform.target }}
+          override: true
+
       - name: Print platform info
         run: |
           echo "Platform: ${{ matrix.platform.name }}"
+          echo "Runner:   ${{ matrix.platform.runner }}"
           echo "Target:   ${{ matrix.platform.target }}"
 
       - name: Cargo build
-        run: cargo build
+        run: cargo build --target ${{ matrix.platform.target }}
