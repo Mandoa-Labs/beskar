@@ -6,15 +6,17 @@ on:
 jobs:
   build:
     name: Build - ${{ matrix.platform.name }}
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.platform.runner}}"
 
     strategy:
       matrix:
         platform:
           - name: Linux x86_64
+            runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
 
           - name: Linux aarch64
+            runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
 
     steps:
