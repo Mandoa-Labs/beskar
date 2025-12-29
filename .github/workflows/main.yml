@@ -28,9 +28,9 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
 
-          - name: Linux armv7
-            runner: ubuntu-22.04
-            target: armv7-unknown-linux-gnueabihf
+          # - name: Linux armv7
+            #runner: ubuntu-22.04
+            #target: armv7-unknown-linux-gnueabihf
 
     steps:
       - uses: actions/checkout@v4
