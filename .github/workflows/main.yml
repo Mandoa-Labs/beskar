@@ -57,7 +57,7 @@ jobs:
         run: |
           APP_NAME=beskar
           VERSION=1.0.${{ github.run_number }}
-          ARCH=${{ matrix.platform.deb_arch }}
+          ARCH=${{ matrix.platform.target }}
 
           PKG_DIR=${APP_NAME}_${VERSION}_${ARCH}
 
