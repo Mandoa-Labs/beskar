@@ -79,3 +79,9 @@ jobs:
           EOF
 
           dpkg-deb --build ${PKG_DIR}
+
+      - name: Upload Debian Package
+        uses: actions/upload-artifact@v6
+        with:
+           name: beskar-${{ matrix.platform.target }}.deb
+           path: "*.deb"
