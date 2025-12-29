@@ -85,3 +85,22 @@ jobs:
         with:
            name: beskar-${{ matrix.platform.target }}.deb
            path: "*.deb"
+
+  release:
+    runs-on: ubuntu-slim
+    needs: build
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: release-${{ github.run_number }}
+          files: dist/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
