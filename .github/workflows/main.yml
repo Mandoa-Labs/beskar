@@ -15,18 +15,22 @@ jobs:
           - name: Linux x86_64
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            arch: amd64
 
           - name: Linux aarch64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            arch: arm64
         
           - name: Linux x86_64 (musl)
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-musl
+            arch: amd64
 
           - name: Linux aarch64 (musl)
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+            arch: arm64
 
           # - name: Linux armv7
             #runner: ubuntu-22.04
@@ -57,7 +61,7 @@ jobs:
         run: |
           APP_NAME=beskar
           VERSION=1.0.${{ github.run_number }}
-          ARCH=${{ matrix.platform.target }}
+          ARCH=${{ matrix.platform.arch }}
 
           PKG_DIR=${APP_NAME}_${VERSION}_${ARCH}
 
