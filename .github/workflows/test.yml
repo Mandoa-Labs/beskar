@@ -1,0 +1,46 @@
+name: Rust Debian Package CI
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-debian-package:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-deb utility
+      run: cargo install cargo-deb
+
+    - name: Build and create Debian package
+      run: cargo deb
+
+    - name: Upload Debian package artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: debian-package
+        path: target/debian/*.deb
+   
+  release:
+    runs-on: ubuntu-slim
+    needs: build-debian-package
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: release-${{ github.run_number }}
+          files: dist/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  
+  
