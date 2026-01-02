@@ -27,6 +27,9 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
+      #
+      # Debian
+      #
       - name: Install cargo-deb
         run: cargo install cargo-deb
 
@@ -37,7 +40,25 @@ jobs:
           cargo deb \
             --target ${{ matrix.rust_target }} \
             --no-strip
+      #
+      # RPM
+      # 
+      - name: Install cargo-rpm
+        run: cargo install cargo-rpm
 
+      - name: Install RPM build dependencies
+        run: |
+         sudo apt-get update
+         sudo apt-get install -y rpm
+
+      - name: Build RPM package
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
+        run: |
+         cargo rpm build \
+          --target ${{ matrix.rust_target }} \
+          --no-strip
+      
       - name: Upload Debian package artifact
         uses: actions/upload-artifact@v4
         with:
