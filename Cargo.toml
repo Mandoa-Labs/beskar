@@ -15,4 +15,4 @@ release = "1"
 summary = "Short description of what this tool does"
 
 [package.metadata.rpm.targets]
-your-app-name = { path = "/usr/bin/your-app-name" }
+your-app-name = { path = "/target" }
