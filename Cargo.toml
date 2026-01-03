@@ -3,16 +3,17 @@ name = "beskar"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "text"
+description = "Beskar is a Rust CLI tool"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 
-
 [package.metadata.rpm]
-package = "your-app-name"
+name = "beskar"
 release = "1"
-summary = "Short description of what this tool does"
+summary = "Rust CLI tool"
+description = "Beskar is a Rust-based command-line application."
+license = "MIT"
 
 [package.metadata.rpm.targets]
-your-app-name = { path = "/target" }
+beskar = { path = "/usr/bin/beskar" }
