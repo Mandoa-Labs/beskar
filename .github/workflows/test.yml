@@ -1,0 +1,38 @@
+name: Rocky Linux Container CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  rocky-job:
+    runs-on: ubuntu-latest
+
+    container:
+      image: rockylinux:9
+      options: --user root
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show OS info
+        run: |
+          cat /etc/os-release
+          uname -a
+
+      - name: Install packages
+        run: |
+          dnf -y update
+          dnf -y install \
+            gcc \
+            gcc-c++ \
+            make \
+            curl \
+            git
+
+      - name: Run a test command
+        run: |
+          echo "Running inside Rocky Linux"
+          gcc --version
