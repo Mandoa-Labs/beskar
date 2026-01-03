@@ -78,6 +78,8 @@ jobs:
             --target ${{ matrix.rust_target }} \
             -v
 
+          tree
+
       - name: Upload RPM package artifact
         uses: actions/upload-artifact@v4
         with:
