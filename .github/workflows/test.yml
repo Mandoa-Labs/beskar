@@ -67,14 +67,9 @@ jobs:
       - name: Install cargo-rpm
         run: cargo install cargo-rpm
 
-      - name: Build release binary
-        env:
-          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
-        run: |
-          cargo build \
-           --release \
-           --target ${{ matrix.rust_target }}
-           
+      - name: Initialize cargo-rpm
+        run: cargo rpm init
+
       - name: Build RPM package
         env:
           CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
@@ -98,13 +93,15 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: dist
+          path: artifacts
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: release-${{ github.run_number }}
           name: Release ${{ github.run_number }}
-          files: dist/**/*
+          files: |
+            artifacts/**/*.deb
+            artifacts/**/*.rpm
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
