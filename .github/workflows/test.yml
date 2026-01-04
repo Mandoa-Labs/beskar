@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     container:
-      image: rockylinux:9
+      image: registry.access.redhat.com/ubi8/ubi
       options: --user root
 
     steps:
