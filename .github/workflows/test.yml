@@ -25,7 +25,7 @@ jobs:
       - name: Install packages
         run: |
           dnf -y update
-          dnf -y install \
+          dnf -y install curl --allowerasing \
             gcc \
             gcc-c++ \
             make \
