@@ -17,22 +17,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show OS info
-        run: |
-          cat /etc/os-release
-          uname -a
+      - name: Install cargo-rpm
+        run: cargo install cargo-rpm
 
-      - name: Install packages
-        run: |
-          dnf -y update
-          dnf -y install curl --allowerasing \
-            gcc \
-            gcc-c++ \
-            make \
-            curl \
-            git
+      - name: Initialize cargo-rpm
+        run: cargo rpm init
 
-      - name: Run a test command
+      - name: Build RPM package
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
         run: |
-          echo "Running inside Rocky Linux"
-          gcc --version
+          cargo rpm build \
+            --target ${{ matrix.rust_target }} \
+            -v
+
+          # Create the rpm directory and move the built RPM files
+          mkdir -p target/${{ matrix.rust_target }}/rpm
+          find target/${{ matrix.rust_target }}/release/rpmbuild/RPMS -name "*.rpm" -exec cp {} target/${{ matrix.rust_target }}/rpm/ \;
+
+      - name: Upload RPM package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package-${{ matrix.arch }}
+          path: target/${{ matrix.rust_target }}/rpm/*.rpm
