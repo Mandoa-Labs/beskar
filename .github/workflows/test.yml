@@ -7,7 +7,19 @@ on:
 
 jobs:
   rocky-job:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
+
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
 
     container:
       image: registry.access.redhat.com/ubi8/ubi
@@ -48,9 +60,15 @@ jobs:
           fi
 
       - name: Build RPM package
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
         run: |
-          cargo rpm build -v
-          tree
+          cargo rpm build \
+            --target ${{ matrix.rust_target }} \
+            -v
+
+          mkdir -p target/${{ matrix.rust_target }}/rpm
+          find target/${{ matrix.rust_target }}/release/rpmbuild/RPMS -name "*.rpm" -exec cp {} target/${{ matrix.rust_target }}/rpm/ \;
 
       - name: Collect RPM artifacts
         run: |
