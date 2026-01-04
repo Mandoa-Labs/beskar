@@ -50,6 +50,7 @@ jobs:
       - name: Build RPM package
         run: |
           cargo rpm build -v
+          tree
 
       - name: Collect RPM artifacts
         run: |
