@@ -60,18 +60,12 @@ jobs:
           fi
 
       - name: Build RPM package
-        env:
-          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
         run: |
           cargo rpm build \
             --target ${{ matrix.rust_target }} \
+            --release \
             -v
-
-          mkdir -p target/${{ matrix.rust_target }}/rpm
-          find target/${{ matrix.rust_target }}/release/rpmbuild/RPMS -name "*.rpm" -exec cp {} target/${{ matrix.rust_target }}/rpm/ \;
-
-      - name: Collect RPM artifacts
-        run: |
+      
           mkdir -p dist
           find target -name "*.rpm" -exec cp {} dist/ \;
 
