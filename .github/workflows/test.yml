@@ -39,35 +39,58 @@ jobs:
             pkgconfig \
             curl \
             git
-
-      - name: Install Rust (cargo)
-        run: |
-          curl https://sh.rustup.rs -sSf | sh -s -- -y
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Verify Rust installation
-        run: |
-          rustc --version
-          cargo --version
-
-      - name: Install cargo-rpm
+           - name: Install cargo-rpm
         run: cargo install cargo-rpm
 
-      - name: Initialize cargo-rpm (only once)
-        run: |
-          if [ ! -f rpm.spec ]; then
-            cargo rpm init
-          fi
+      - name: Initialize cargo-rpm
+        run: cargo rpm init
 
       - name: Build RPM package
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
         run: |
           cargo rpm build \
             --target ${{ matrix.rust_target }} \
-            --release \
             -v
+
+          # Create the rpm directory and move the built RPM files
+          mkdir -p target/${{ matrix.rust_target }}/rpm
+          find target/${{ matrix.rust_target }}/release/rpmbuild/RPMS -name "*.rpm" -exec cp {} target/${{ matrix.rust_target }}/rpm/ \;
+
+      - name: Upload RPM package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package-${{ matrix.arch }}
+          path: target/${{ matrix.rust_target }}/rpm/*.rpm
+
+      # - name: Install Rust (cargo)
+      #   run: |
+      #     curl https://sh.rustup.rs -sSf | sh -s -- -y
+      #     echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      # - name: Verify Rust installation
+      #   run: |
+      #     rustc --version
+      #     cargo --version
+
+      # - name: Install cargo-rpm
+      #   run: cargo install cargo-rpm
+
+      # - name: Initialize cargo-rpm (only once)
+      #   run: |
+      #     if [ ! -f rpm.spec ]; then
+      #       cargo rpm init
+      #     fi
+
+      # - name: Build RPM package
+      #   run: |
+      #     cargo rpm build \
+      #       --target ${{ matrix.rust_target }} \
+      #       --release \
+      #       -v
       
-          mkdir -p dist
-          find target -name "*.rpm" -exec cp {} dist/ \;
+      #     mkdir -p dist
+      #     find target -name "*.rpm" -exec cp {} dist/ \;
 
       - name: Upload RPM package artifact
         uses: actions/upload-artifact@v4
