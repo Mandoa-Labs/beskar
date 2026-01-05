@@ -43,24 +43,28 @@ jobs:
       - name: Install Rust
         run: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           source "$HOME/.cargo/env"
+          rustup target add ${{ matrix.rust_target }}
 
       - name: Verify Rust installation
         run: |
+          source "$HOME/.cargo/env"
           rustc --version
           cargo --version
 
       - name: Install cargo-rpm
-        run: cargo install cargo-rpm
+        run: |
+          source "$HOME/.cargo/env"
+          cargo install cargo-rpm
 
       - name: Initialize cargo-rpm
-        run: cargo rpm init
+        run: |
+          source "$HOME/.cargo/env"
+          cargo rpm init
 
       - name: Build RPM package
-        env:
-          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
         run: |
+          source "$HOME/.cargo/env"
           cargo rpm build \
             --target ${{ matrix.rust_target }} \
             -v
