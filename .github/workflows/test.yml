@@ -69,9 +69,10 @@ jobs:
             --target ${{ matrix.rust_target }} \
             -v
 
+          tree
           # Create the rpm directory and move the built RPM files
-          mkdir -p target/${{ matrix.rust_target }}/rpm
-          find target/${{ matrix.rust_target }}/release/rpmbuild/RPMS -name "*.rpm" -exec cp {} target/${{ matrix.rust_target }}/rpm/ \;
+          # mkdir -p target/${{ matrix.rust_target }}/rpm
+          # find target/${{ matrix.rust_target }}/release/rpmbuild/RPMS -name "*.rpm" -exec cp {} target/${{ matrix.rust_target }}/rpm/ \;
 
       - name: Upload RPM package artifact
         uses: actions/upload-artifact@v4
