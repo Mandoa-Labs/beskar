@@ -64,11 +64,12 @@ jobs:
 
       - name: Build RPM package
         run: |
-          mkdir /usr
-          mkdir /usr/bin
-          mkdir /usr/bin/beskar
+          mkdir -p /usr
+          mkdir -p /usr/bin
+          mkdir -p /usr/bin/beskar
           
           source "$HOME/.cargo/env"
+          tree
           cargo rpm build \
             --target ${{ matrix.rust_target }} \
             -v
