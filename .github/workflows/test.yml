@@ -69,7 +69,8 @@ jobs:
           mkdir -p /usr/bin/beskar
           
           source "$HOME/.cargo/env"
-          tree
+          pwd
+          la -R
           cargo rpm build \
             --target ${{ matrix.rust_target }} \
             -v
