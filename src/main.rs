@@ -1,5 +1,6 @@
 use std::io;
 use clap::{Parser, Subcommand};
+mod init;
 
 /// Main CLI application
 #[derive(Parser)]
@@ -33,6 +34,8 @@ fn main() {
 
     match cli.command {
         Commands::Init => {
+            init::init();
+            println!("Hello from main init!");
             println!("Initializing new project...");
         },
         Commands::Db { create, drop, list } => {
