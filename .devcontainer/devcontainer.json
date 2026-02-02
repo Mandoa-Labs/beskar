@@ -1,0 +1,28 @@
+{
+  "name": "Debian with Rust",
+  "image": "mcr.microsoft.com/devcontainers/base:debian",
+  
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "latest",
+      "profile": "default"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates"
+      ],
+      "settings": {
+        "rust-analyzer.checkOnSave.command": "clippy"
+      }
+    }
+  },
+
+  "postCreateCommand": "rustc --version && cargo --version",
+
+  "remoteUser": "vscode"
+}
