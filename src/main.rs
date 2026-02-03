@@ -1,7 +1,9 @@
-use std::io;
+// use std::io;
 use clap::{Parser, Subcommand};
 mod init;
 mod document;
+mod generate;
+mod database;
 
 /// Main CLI application
 #[derive(Parser)]
@@ -16,19 +18,17 @@ struct Cli {
 enum Commands {
     Init,
     Db {
-        /// Create the database
         #[arg(long)]
         create: bool,
 
-        /// Drop the database
         #[arg(long)]
         drop: bool,
 
-        /// List databases
         #[arg(long)]
         list: bool,
     },
-    Doc
+    Document,
+    Generate
 }
 
 fn main() {
@@ -41,37 +41,19 @@ fn main() {
             println!("Initializing new project...");
         },
         Commands::Db { create, drop, list } => {
-            if create {
-                println!("Please enter some text:");
-
-                let mut input_text = String::new(); // Create a new, mutable, empty string
-
-                io::stdin()
-                 .read_line(&mut input_text) // Read the line and append it to the string
-                 .expect("Failed to read line"); // Basic error handling
-
-                println!("You entered: {}", input_text);
-                println!("Creating database...");
-                // create_db();
-            }
-
-            if drop {
-                println!("Dropping database...");
-                // drop_db();
-            }
-
-            if list {
-                println!("Listing databases...");
-                // list_dbs();
-            }
-
-            if !create && !drop && !list {
+            if !create && !drop  && !list {
                 eprintln!("No flag provided. Use --help for options.");
+                return;
             }
+            database::database( create, drop, list);
         },
-        Commands::Doc => {
+        Commands::Document => {
             document::document();
             println!("Hello from main document!");
+        }
+        Commands::Generate => {
+            generate::generate();
+            println!("Hello from main generate!");
         }
     }
 }
