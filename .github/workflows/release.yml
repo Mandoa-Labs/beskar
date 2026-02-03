@@ -64,29 +64,29 @@ jobs:
       # RPM (.rpm)
       # --------------------
       #
-      - name: Install cargo-rpm
-        run: cargo install cargo-rpm
+      # - name: Install cargo-rpm
+      #   run: cargo install cargo-rpm
 
-      - name: Initialize cargo-rpm
-        run: cargo rpm init
+      # - name: Initialize cargo-rpm
+      #   run: cargo rpm init
 
-      - name: Build RPM package
-        env:
-          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
-        run: |
-          cargo rpm build \
-            --target ${{ matrix.rust_target }} \
-            -v
+      # - name: Build RPM package
+      #   env:
+      #     CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
+      #   run: |
+      #     cargo rpm build \
+      #       --target ${{ matrix.rust_target }} \
+      #       -v
 
-          # Create the rpm directory and move the built RPM files
-          mkdir -p target/${{ matrix.rust_target }}/rpm
-          find target/${{ matrix.rust_target }}/release/rpmbuild/RPMS -name "*.rpm" -exec cp {} target/${{ matrix.rust_target }}/rpm/ \;
+      #     # Create the rpm directory and move the built RPM files
+      #     mkdir -p target/${{ matrix.rust_target }}/rpm
+      #     find target/${{ matrix.rust_target }}/release/rpmbuild/RPMS -name "*.rpm" -exec cp {} target/${{ matrix.rust_target }}/rpm/ \;
 
-      - name: Upload RPM package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rpm-package-${{ matrix.arch }}
-          path: target/${{ matrix.rust_target }}/rpm/*.rpm
+      # - name: Upload RPM package artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: rpm-package-${{ matrix.arch }}
+      #     path: target/${{ matrix.rust_target }}/rpm/*.rpm
 
   release:
     name: GitHub Release
