@@ -1,6 +1,7 @@
 use std::io;
 use clap::{Parser, Subcommand};
 mod init;
+mod document;
 
 /// Main CLI application
 #[derive(Parser)]
@@ -27,6 +28,7 @@ enum Commands {
         #[arg(long)]
         list: bool,
     },
+    Doc
 }
 
 fn main() {
@@ -66,6 +68,10 @@ fn main() {
             if !create && !drop && !list {
                 eprintln!("No flag provided. Use --help for options.");
             }
+        },
+        Commands::Doc => {
+            document::document();
+            println!("Hello from main document!");
         }
     }
 }
