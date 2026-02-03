@@ -1,9 +1,9 @@
 
-```
-curl -s https://api.github.com/repos/Mandoa-Labs/beskar/releases/latest \
-| grep "browser_download_url.*\amd64.deb" \
-| cut -d : -f 2,3 \
-| tr -d \" \
-| wget -qi -
+```bash
+curl -s https://github.com/Mandoa-Labs/beskar/releases/download/release-2/beskar_0.1.0-1_arm64.deb -o beskar.deb
+
+sudo dpkg -i beskar.deb
+
+beskar
 
 ```

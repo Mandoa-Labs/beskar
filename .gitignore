@@ -2,6 +2,8 @@
 /target/
 **/*.rs.bk
 *.pdb
+*.deb
+*.rpm
 
 # Cargo.lock is committed for binary projects
 # This is a binary project, so we keep Cargo.lock tracked
