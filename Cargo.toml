@@ -11,7 +11,7 @@ clap = { version = "4.5", features = ["derive"] }
 dirs = "5"
 
 [package.metadata.deb]
-maintainer = "evanallen13"
+maintainer = "Evan Allen <evanallen13@github.com>"
 section = "utils"
 priority = "optional"
 
