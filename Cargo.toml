@@ -8,6 +8,7 @@ description = "Beskar is a Rust CLI tool"
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 dirs = "5"
+walkdir = "2.3.3"
 
 [package.metadata.deb]
 maintainer = "Evan Allen <evanallen13@github.com>"

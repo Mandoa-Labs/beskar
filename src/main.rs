@@ -51,7 +51,7 @@ fn main() {
             database::database( create, drop, list);
         },
         Commands::Document { path } => {
-            document::document();
+            document::document(&path);
             println!("Document path: {}", path);
         },
         Commands::Generate => {

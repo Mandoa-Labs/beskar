@@ -1,23 +1,26 @@
 // use std::fs;
-// use std::path::{Path, PathBuf};
-// use walkdir::WalkDir;
+use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 
-pub fn document(){
+pub fn document(path : &str) {
+    
+    collect_md_files(Path::new(path)).expect("Failed to collect markdown files");
     println!("Hello from document!")
 }
 
-// fn collect_md_files(dir: &Path) -> Result<Vec<PathBuf>> {
-//     let mut files = Vec::new();
+fn collect_md_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
 
-//     for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
-//         let path = entry.path();
-//         if path.extension().and_then(|s| s.to_str()) == Some("md") {
-//             files.push(path.to_path_buf());
-//         }
-//     }
+    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("md") {
+            println!("Found markdown file: {}", path.display());
+            files.push(path.to_path_buf());
+        }
+    }
 
-//     Ok(files)
-// }
+    Ok(files)
+}
 
 // /// Chunk text with overlap
 // fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
