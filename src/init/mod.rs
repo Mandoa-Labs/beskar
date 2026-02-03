@@ -29,9 +29,20 @@ fn append(content: &str) -> io::Result<()> {
 }
 
 pub fn init(){
-    write("counter: 42 ").expect("Failed to write to file");
-    append("password: 42323").expect("Failed to write to file");
+    write("person: ").expect("Failed to write to file");
+    append("    name: John Smith").expect("Failed to write to file");
+    append("    age: 33").expect("Failed to write to file");
+    append("    gender: Male").expect("Failed to write to file");
+    append("    is_student: false").expect("Failed to write to file");
+    append("    address: ").expect("Failed to write to file");
+    append("        street: 123 Main Street").expect("Failed to write to file");
+    append("        city: Anywhere").expect("Failed to write to file");
+    append("        state: CA").expect("Failed to write to file");
+    append("        zipcode: \"90210\"").expect("Failed to write to file");
+    append("\n").expect("Failed to write to file");
+
     let contents = read().expect("Failed to read from file");
     println!("File contents: {}", contents);
     println!("Hello from init!")
 }
+
