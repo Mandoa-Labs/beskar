@@ -27,9 +27,12 @@ enum Commands {
         #[arg(long)]
         list: bool,
     },
-    Document,
+    Document {
+        #[arg(long, value_name = "PATH")]
+        path: String,
+    },
     Generate
-}
+} 
 
 fn main() {
     let cli = Cli::parse();
@@ -47,10 +50,10 @@ fn main() {
             }
             database::database( create, drop, list);
         },
-        Commands::Document => {
+        Commands::Document { path } => {
             document::document();
-            println!("Hello from main document!");
-        }
+            println!("Document path: {}", path);
+        },
         Commands::Generate => {
             generate::generate();
             println!("Hello from main generate!");

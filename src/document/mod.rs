@@ -6,7 +6,6 @@ pub fn document(){
     println!("Hello from document!")
 }
 
-
 // fn collect_md_files(dir: &Path) -> Result<Vec<PathBuf>> {
 //     let mut files = Vec::new();
 
