@@ -18,28 +18,13 @@ fn read() -> io::Result<String> {
     Ok(contents)
 }
 
-fn append(content: &str) -> io::Result<()> {
-    let dir = "/var/lib/beskar";
-    let state_file = format!("{}/config.yaml", dir);
-    let mut existing_content = fs::read_to_string(&state_file)?;
-    existing_content.push('\n');
-    existing_content.push_str(content);
-    fs::write(&state_file, existing_content)?;
-    Ok(())
-}
-
 pub fn init(){
-    write("person: ").expect("Failed to write to file");
-    append("    name: John Smith").expect("Failed to write to file");
-    append("    age: 33").expect("Failed to write to file");
-    append("    gender: Male").expect("Failed to write to file");
-    append("    is_student: false").expect("Failed to write to file");
-    append("    address: ").expect("Failed to write to file");
-    append("        street: 123 Main Street").expect("Failed to write to file");
-    append("        city: Anywhere").expect("Failed to write to file");
-    append("        state: CA").expect("Failed to write to file");
-    append("        zipcode: \"90210\"").expect("Failed to write to file");
-    append("\n").expect("Failed to write to file");
+
+    let mut yaml = String::from("name: beskar\nversion: 0.1.0\n");
+
+    yaml += "settings:\n  option1: true\n  option2: false\n";
+
+    write(&yaml).expect("Failed to write to file");
 
     let contents = read().expect("Failed to read from file");
     println!("File contents: {}", contents);
