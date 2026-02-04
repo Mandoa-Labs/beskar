@@ -52,7 +52,6 @@ fn main() {
         },
         Commands::Document { path } => {
             document::document(&path);
-            println!("Document path: {}", path);
         },
         Commands::Generate => {
             generate::generate();
