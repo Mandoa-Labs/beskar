@@ -3,20 +3,27 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub fn document(path : &str) {
-    collect_md_files(Path::new(path)).expect("Failed to collect markdown files");
+    let chunk_size = 100;        
+    let overlap = 5;
+    collect_files(Path::new(path), chunk_size, overlap).expect("Failed to collect markdown files");
 }
 
-fn collect_md_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+fn collect_files(dir: &Path, chunk_size: usize, overlap: usize) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("md") {
-            println!("Found markdown file: {}", path.display());
+        if path.is_file() {
+            println!("Found file: {}", path.display());
+            if path.extension().and_then(|s| s.to_str()) != Some("md") && path.extension().and_then(|s| s.to_str()) != Some("txt") {
+                println!("Skipping non-markdown file: {}", path.display());
+                continue;
+            }
             files.push(path.to_path_buf());
             let content = fs::read_to_string(path)?;
-            let chunks = chunk_text(&content, 1000, 200);
+            let chunks = chunk_text(&content, chunk_size, overlap);
             println!("Created {} chunks for {}", chunks.len(), path.display());
+            println!("{}", chunks[0]);
         }
     }
 

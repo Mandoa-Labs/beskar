@@ -40,8 +40,6 @@ fn main() {
     match cli.command {
         Commands::Init => {
             init::init();
-            println!("Hello from main init!");
-            println!("Initializing new project...");
         },
         Commands::Db { create, drop, list } => {
             if !create && !drop  && !list {
@@ -55,7 +53,6 @@ fn main() {
         },
         Commands::Generate => {
             generate::generate();
-            println!("Hello from main generate!");
         }
     }
 }
