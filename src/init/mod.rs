@@ -18,16 +18,37 @@ fn read() -> io::Result<String> {
     Ok(contents)
 }
 
+fn user_input(prompt: &str) -> String {
+    use std::io::{stdin,stdout,Write};
+    let mut _s=String::new();
+    print!("{}", prompt);
+    let _=stdout().flush();
+    stdin().read_line(&mut _s).expect("Did not enter a correct string");
+    if let Some('\n')=_s.chars().next_back() {
+        _s.pop();
+    }
+    if let Some('\r')=_s.chars().next_back() {
+        _s.pop();
+    }
+
+    _s
+}
 pub fn init(){
+    let pat = user_input("Enter PAT: ");
+    let connect_string:String = user_input("Enter the connection string: ");
 
-    let mut yaml = String::from("name: beskar\nversion: 0.1.0\n");
-
-    yaml += "settings:\n  option1: true\n  option2: false\n";
+    let yaml= format!(
+        r#"
+           pat: {}
+           connection_string : {}   
+        "#,
+        pat, connect_string
+    );
 
     write(&yaml).expect("Failed to write to file");
 
     let contents = read().expect("Failed to read from file");
     println!("File contents: {}", contents);
-    println!("Hello from init!")
+
 }
 

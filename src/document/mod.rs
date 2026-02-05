@@ -19,6 +19,8 @@ fn collect_files(dir: &Path, chunk_size: usize, overlap: usize) -> std::io::Resu
                 println!("Skipping non-markdown file: {}", path.display());
                 continue;
             }
+
+
             files.push(path.to_path_buf());
             let content = fs::read_to_string(path)?;
             let chunks = chunk_text(&content, chunk_size, overlap);
