@@ -1,5 +1,6 @@
 use std::fs;
 use std::io;
+// use crate::utils;
 
 fn write(yaml: &str) -> io::Result<()> {
     let dir = "/var/lib/beskar";
@@ -11,12 +12,12 @@ fn write(yaml: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn read() -> io::Result<String> {
-    let dir = "/var/lib/beskar";
-    let state_file = format!("{}/config.yaml", dir);
-    let contents = fs::read_to_string(&state_file)?;
-    Ok(contents)
-}
+// fn read() -> io::Result<String> {
+//     let dir = "/var/lib/beskar";
+//     let state_file = format!("{}/config.yaml", dir);
+//     let contents = fs::read_to_string(&state_file)?;
+//     Ok(contents)
+// }
 
 fn user_input(prompt: &str) -> String {
     use std::io::{stdin,stdout,Write};
@@ -47,8 +48,8 @@ pub fn init(){
 
     write(&yaml).expect("Failed to write to file");
 
-    let contents = read().expect("Failed to read from file");
-    println!("File contents: {}", contents);
+    // let contents = utils::read_yaml("/var/lib/beskar/config.yaml").expect("Failed to read from file");
+    // println!("File contents: {}", contents);
 
 }
 
