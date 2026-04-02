@@ -1,9 +1,11 @@
+#![allow(warnings)]
 // use std::io;
 use clap::{Parser, Subcommand};
 mod init;
 mod document;
 mod generate;
 mod database;
+mod utils;
 
 /// Main CLI application
 #[derive(Parser)]
@@ -26,6 +28,9 @@ enum Commands {
 
         #[arg(long)]
         list: bool,
+
+        #[arg(long)]
+        table_name: Option<String>,
     },
     Document {
         #[arg(long, value_name = "PATH")]
@@ -41,12 +46,12 @@ fn main() {
         Commands::Init => {
             init::init();
         },
-        Commands::Db { create, drop, list } => {
+        Commands::Db { create, drop, list, table_name } => {
             if !create && !drop  && !list {
                 eprintln!("No flag provided. Use --help for options.");
                 return;
             }
-            database::database( create, drop, list);
+            database::database(create, drop, list, table_name);
         },
         Commands::Document { path } => {
             document::document(&path);

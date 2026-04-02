@@ -1,26 +1,32 @@
 use std::fs;
 use std::io;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 // use crate::utils;
 
+fn config_dir() -> String {
+    let home = dirs::config_dir().expect("Could not determine config directory");
+    format!("{}/beskar", home.display())
+}
+
 fn write(yaml: &str) -> io::Result<()> {
-    let dir = "/var/lib/beskar";
-    fs::create_dir_all(dir)?;
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
 
     let state_file = format!("{}/config.yaml", dir);
-    fs::write(&state_file, yaml)?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&state_file)?
+        .write_all(yaml.as_bytes())?;
 
     Ok(())
 }
 
-// fn read() -> io::Result<String> {
-//     let dir = "/var/lib/beskar";
-//     let state_file = format!("{}/config.yaml", dir);
-//     let contents = fs::read_to_string(&state_file)?;
-//     Ok(contents)
-// }
-
 fn user_input(prompt: &str) -> String {
-    use std::io::{stdin,stdout,Write};
+    use std::io::{stdin,stdout};
     let mut _s=String::new();
     print!("{}", prompt);
     let _=stdout().flush();

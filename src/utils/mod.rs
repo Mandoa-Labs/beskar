@@ -3,9 +3,9 @@ use std::io;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
-struct Config {
-    pat: String,
-    connection_string: String,
+pub struct Config {
+    pub pat: String,
+    pub connection_string: String,
 }
 
 fn read_yaml_file(path: &str) -> io::Result<Config> {
@@ -13,6 +13,12 @@ fn read_yaml_file(path: &str) -> io::Result<Config> {
     let config: Config = serde_yaml::from_str(&contents)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     Ok(config)
+}
+
+pub fn read_config() -> io::Result<Config> {
+    let dir = dirs::config_dir().expect("Could not determine config directory");
+    let path = format!("{}/beskar/config.yaml", dir.display());
+    read_yaml_file(&path)
 }
 
 pub fn read_yaml(path: &str) -> io::Result<()> {
