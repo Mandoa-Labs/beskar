@@ -1,4 +1,8 @@
 {
+  "statusLine": {
+    "type": "command",
+    "command": "node /workspaces/beskar/.claude/statusline-command.js"
+  },
   "permissions": {
     "allow": [
       "WebFetch(domain:gist.github.com)",

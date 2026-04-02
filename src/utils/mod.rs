@@ -5,7 +5,11 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub pat: String,
-    pub connection_string: String,
+    pub pghost: String,
+    pub pguser: String,
+    pub pgport: String,
+    pub pgdatabase: String,
+    pub pgpassword: String,
 }
 
 fn read_yaml_file(path: &str) -> io::Result<Config> {
@@ -25,7 +29,6 @@ pub fn read_yaml(path: &str) -> io::Result<()> {
     let config = read_yaml_file(path)?;
 
     println!("PAT: {}", config.pat);
-    println!("Connection String: {}", config.connection_string);
 
     Ok(())
 }

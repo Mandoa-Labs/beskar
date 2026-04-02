@@ -12,6 +12,8 @@ walkdir = "2.3.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 postgres = "0.19.13"
+openssl = "0.10"
+postgres-openssl = "0.5"
 
 
 [package.metadata.deb]

@@ -1,8 +1,18 @@
 use crate::utils;
-use postgres::{Client, NoTls};
+use openssl::ssl::{SslConnector, SslMethod};
+use postgres::Client;
+use postgres_openssl::MakeTlsConnector;
 
 fn connect(config: &utils::Config) -> Client {
-    Client::connect(&config.connection_string, NoTls)
+    let conn_string = format!(
+        "host={} user={} port={} dbname={} password={} sslmode=require",
+        config.pghost, config.pguser, config.pgport, config.pgdatabase, config.pgpassword
+    );
+
+    let builder = SslConnector::builder(SslMethod::tls()).expect("Failed to create SSL connector");
+    let connector = MakeTlsConnector::new(builder.build());
+
+    Client::connect(&conn_string, connector)
         .expect("Failed to connect to PostgreSQL")
 }
 

@@ -40,21 +40,30 @@ fn user_input(prompt: &str) -> String {
 
     _s
 }
-fn build_yaml(pat: &str, connection_string: &str) -> String {
+fn build_yaml(pat: &str, pghost: &str, pguser: &str, pgport: &str, pgdatabase: &str, pgpassword: &str) -> String {
     format!(
-        r#"
-           pat: {}
-           connection_string : {}
-        "#,
-        pat, connection_string
+        r#"pat: {}
+pghost: {}
+pguser: {}
+pgport: {}
+pgdatabase: {}
+pgpassword: {}
+"#,
+        pat, pghost, pguser, pgport, pgdatabase, pgpassword
     )
 }
 
 pub fn init(){
     let pat = user_input("Enter PAT: ");
-    let connect_string:String = user_input("Enter the connection string: ");
+    let pghost = user_input("Enter PGHOST: ");
+    let pguser = user_input("Enter PGUSER: ");
+    let pgport = user_input("Enter PGPORT (default 5432): ");
+    let pgport = if pgport.is_empty() { "5432".to_string() } else { pgport };
+    let pgdatabase = user_input("Enter PGDATABASE (default postgres): ");
+    let pgdatabase = if pgdatabase.is_empty() { "postgres".to_string() } else { pgdatabase };
+    let pgpassword = user_input("Enter PGPASSWORD: ");
 
-    let yaml = build_yaml(&pat, &connect_string);
+    let yaml = build_yaml(&pat, &pghost, &pguser, &pgport, &pgdatabase, &pgpassword);
     write(&yaml).expect("Failed to write to file");
 }
 
@@ -65,21 +74,25 @@ mod tests {
 
     #[test]
     fn test_build_yaml() {
-        let yaml = build_yaml("test_pat", "host=localhost dbname=test");
+        let yaml = build_yaml("test_pat", "localhost", "user", "5432", "testdb", "pass");
         assert!(yaml.contains("pat: test_pat"));
-        assert!(yaml.contains("connection_string : host=localhost dbname=test"));
+        assert!(yaml.contains("pghost: localhost"));
+        assert!(yaml.contains("pguser: user"));
+        assert!(yaml.contains("pgport: 5432"));
+        assert!(yaml.contains("pgdatabase: testdb"));
+        assert!(yaml.contains("pgpassword: pass"));
     }
 
     #[test]
     fn test_write_and_read_config() {
-        let yaml = build_yaml("my_pat", "host=localhost dbname=mydb");
+        let yaml = build_yaml("my_pat", "myhost", "myuser", "5432", "mydb", "mypass");
         write(&yaml).expect("Failed to write config");
 
         let dir = config_dir();
         let path = format!("{}/config.yaml", dir);
         let contents = fs::read_to_string(&path).expect("Failed to read config file");
         assert!(contents.contains("pat: my_pat"));
-        assert!(contents.contains("connection_string : host=localhost dbname=mydb"));
+        assert!(contents.contains("pghost: myhost"));
 
         // Verify file permissions are 0600
         use std::os::unix::fs::PermissionsExt;
