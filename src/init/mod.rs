@@ -40,22 +40,52 @@ fn user_input(prompt: &str) -> String {
 
     _s
 }
+fn build_yaml(pat: &str, connection_string: &str) -> String {
+    format!(
+        r#"
+           pat: {}
+           connection_string : {}
+        "#,
+        pat, connection_string
+    )
+}
+
 pub fn init(){
     let pat = user_input("Enter PAT: ");
     let connect_string:String = user_input("Enter the connection string: ");
 
-    let yaml= format!(
-        r#"
-           pat: {}
-           connection_string : {}   
-        "#,
-        pat, connect_string
-    );
-
+    let yaml = build_yaml(&pat, &connect_string);
     write(&yaml).expect("Failed to write to file");
+}
 
-    // let contents = utils::read_yaml("/var/lib/beskar/config.yaml").expect("Failed to read from file");
-    // println!("File contents: {}", contents);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
 
+    #[test]
+    fn test_build_yaml() {
+        let yaml = build_yaml("test_pat", "host=localhost dbname=test");
+        assert!(yaml.contains("pat: test_pat"));
+        assert!(yaml.contains("connection_string : host=localhost dbname=test"));
+    }
+
+    #[test]
+    fn test_write_and_read_config() {
+        let yaml = build_yaml("my_pat", "host=localhost dbname=mydb");
+        write(&yaml).expect("Failed to write config");
+
+        let dir = config_dir();
+        let path = format!("{}/config.yaml", dir);
+        let contents = fs::read_to_string(&path).expect("Failed to read config file");
+        assert!(contents.contains("pat: my_pat"));
+        assert!(contents.contains("connection_string : host=localhost dbname=mydb"));
+
+        // Verify file permissions are 0600
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::metadata(&path).expect("Failed to get metadata");
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 }
 
