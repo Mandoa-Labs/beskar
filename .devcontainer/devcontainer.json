@@ -1,28 +1,31 @@
 {
-  "name": "Debian with Rust",
-  "image": "mcr.microsoft.com/devcontainers/base:debian",
-  
-  "features": {
-    "ghcr.io/devcontainers/features/rust:1": {
-      "version": "1.85",
-      "profile": "default"
-    }
-  },
+    "name": "Debian with Rust",
+    "image": "mcr.microsoft.com/devcontainers/base:debian",
 
-  "customizations": {
-    "vscode": {
-      "extensions": [
-        "rust-lang.rust-analyzer",
-        "tamasfe.even-better-toml",
-        "serayuzgur.crates"
-      ],
-      "settings": {
-        "rust-analyzer.checkOnSave.command": "clippy"
+    "features": {
+      "ghcr.io/devcontainers/features/rust:1": {
+        "version": "1.85",
+        "profile": "default"
+      },
+      "ghcr.io/devcontainers/features/node:1": {
+        "version": "lts"
       }
-    }
-  },
+    },
 
-  "postCreateCommand": "rustc --version && cargo --version",
+    "customizations": {
+      "vscode": {
+        "extensions": [
+          "rust-lang.rust-analyzer",
+          "tamasfe.even-better-toml",
+          "serayuzgur.crates"
+        ],
+        "settings": {
+          "rust-analyzer.checkOnSave.command": "clippy"
+        }
+      }
+    },
 
-  "remoteUser": "vscode"
-}
+    "postCreateCommand": "rustc --version && cargo --version && npm install -g @anthropic-ai/claude-code",
+
+    "remoteUser": "vscode"
+  }
