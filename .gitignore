@@ -85,6 +85,13 @@ tarpaulin-report.html
 # CI/CD
 .travis.yml.bak
 
+# Terraform
+*.tfvars
+!*.tfvars.example
+.terraform/
+*.tfstate
+*.tfstate.backup
+
 # Temporary files
 /tmp/
 /temp/

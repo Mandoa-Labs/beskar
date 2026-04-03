@@ -1,0 +1,9 @@
+learsubscription_id = ""
+resource_group_name = ""
+location            = ""
+server_name         = ""
+admin_username      = ""
+admin_password      = ""
+database_name       = ""
+sku_name            = "B_Standard_B1ms"
+storage_mb          = 32768
