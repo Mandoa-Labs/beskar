@@ -56,6 +56,7 @@ fn create_tables(config: &utils::Config, table_name: &str) {
             document_id INTEGER NOT NULL REFERENCES {table_name}_documents(id) ON DELETE CASCADE,
             chunk_index INTEGER NOT NULL,
             content TEXT NOT NULL,
+            embedding VECTOR(1536),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )"
     );
@@ -105,13 +106,17 @@ pub fn insert_document(config: &utils::Config, table_name: &str, filename: &str,
     row.get(0)
 }
 
-pub fn insert_chunks(config: &utils::Config, table_name: &str, document_id: i32, chunks: &[String]) {
+pub fn insert_chunks(config: &utils::Config, table_name: &str, document_id: i32, chunks: &[String], embeddings: &[Vec<f32>]) {
     let mut client = connect(config);
 
-    for (i, chunk) in chunks.iter().enumerate() {
+    for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.iter()).enumerate() {
+        let embedding_str = format!(
+            "[{}]",
+            embedding.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+        );
         client.execute(
-            &format!("INSERT INTO {table_name}_chunks (document_id, chunk_index, content) VALUES ($1, $2, $3)"),
-            &[&document_id, &(i as i32), &chunk.as_str()],
+            &format!("INSERT INTO {table_name}_chunks (document_id, chunk_index, content, embedding) VALUES ($1, $2, $3, $4::vector)"),
+            &[&document_id, &(i as i32), &chunk.as_str(), &embedding_str],
         ).expect("Failed to insert chunk");
     }
 

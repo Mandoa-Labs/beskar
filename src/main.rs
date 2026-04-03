@@ -35,6 +35,9 @@ enum Commands {
     Document {
         #[arg(long, value_name = "PATH")]
         path: String,
+
+        #[arg(long)]
+        table_name: String,
     },
     Generate
 } 
@@ -53,8 +56,8 @@ fn main() {
             }
             database::database(create, drop, list, table_name);
         },
-        Commands::Document { path } => {
-            document::document(&path);
+        Commands::Document { path, table_name } => {
+            document::document(&path, &table_name);
         },
         Commands::Generate => {
             generate::generate();

@@ -1,7 +1,7 @@
 {
   "statusLine": {
     "type": "command",
-    "command": "node /workspaces/beskar/.claude/statusline-command.js"
+    "command": "sh -c 'NODE=$(command -v node 2>/dev/null || ls /usr/local/share/nvm/versions/node/*/bin/node 2>/dev/null | tail -1 || ls /usr/local/nvm/versions/node/*/bin/node 2>/dev/null | tail -1); exec \"$NODE\" /workspaces/beskar/.claude/statusline-command.js'"
   },
   "permissions": {
     "allow": [

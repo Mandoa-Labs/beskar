@@ -1,35 +1,75 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use walkdir::WalkDir;
+use crate::utils;
+use crate::database;
 
-pub fn document(path : &str) {
-    let chunk_size = 100;        
+pub fn document(path: &str, table_name: &str) {
+    let config = utils::read_config().expect("Failed to read config. Run `beskar init` first.");
+    let chunk_size = 100;
     let overlap = 5;
-    collect_files(Path::new(path), chunk_size, overlap).expect("Failed to collect markdown files");
+
+    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+        let file_path = entry.path();
+        if !file_path.is_file() {
+            continue;
+        }
+        match file_path.extension().and_then(|s| s.to_str()) {
+            Some("md") | Some("txt") => {}
+            _ => continue,
+        }
+
+        println!("Processing: {}", file_path.display());
+        let content = fs::read_to_string(file_path).expect("Failed to read file");
+        let chunks = chunk_text(&content, chunk_size, overlap);
+        println!("Created {} chunks for {}", chunks.len(), file_path.display());
+
+        let filename = file_path.file_name().unwrap().to_str().unwrap();
+        let source_path = file_path.to_str().unwrap();
+        let doc_id = database::insert_document(&config, table_name, filename, source_path, &content);
+
+        let embeddings = embed_chunks(&config.pat, &chunks);
+        database::insert_chunks(&config, table_name, doc_id, &chunks, &embeddings);
+
+        println!("Saved '{}' (doc_id={}) with {} chunks", filename, doc_id, chunks.len());
+    }
 }
 
-fn collect_files(dir: &Path, chunk_size: usize, overlap: usize) -> std::io::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
+fn embed_chunks(api_key: &str, chunks: &[String]) -> Vec<Vec<f32>> {
+    let client = reqwest::blocking::Client::new();
+    let body = serde_json::json!({
+        "model": "text-embedding-3-small",
+        "input": chunks,
+    });
 
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if path.is_file() {
-            println!("Found file: {}", path.display());
-            if path.extension().and_then(|s| s.to_str()) != Some("md") && path.extension().and_then(|s| s.to_str()) != Some("txt") {
-                println!("Skipping non-markdown file: {}", path.display());
-                continue;
-            }
+    let resp = client
+        .post("https://api.openai.com/v1/embeddings")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&body)
+        .send()
+        .expect("Failed to call embedding API");
 
-
-            files.push(path.to_path_buf());
-            let content = fs::read_to_string(path)?;
-            let chunks = chunk_text(&content, chunk_size, overlap);
-            println!("Created {} chunks for {}", chunks.len(), path.display());
-            println!("{}", chunks[0]);
-        }
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        panic!("Embedding API returned {}: {}", status, body);
     }
 
-    Ok(files)
+    let json: serde_json::Value = resp.json().expect("Failed to parse embedding response");
+
+    json["data"]
+        .as_array()
+        .expect("Invalid embedding response format")
+        .iter()
+        .map(|item| {
+            item["embedding"]
+                .as_array()
+                .expect("Missing embedding field")
+                .iter()
+                .map(|v| v.as_f64().unwrap() as f32)
+                .collect()
+        })
+        .collect()
 }
 
 fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
@@ -58,5 +98,4 @@ fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
     }
 
     chunks
-
 }
