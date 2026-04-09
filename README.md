@@ -5,11 +5,29 @@ Beskar is a Rust CLI tool.
 ## Installation
 
 ```bash
-curl -s https://github.com/Mandoa-Labs/beskar/releases/download/release-2/beskar_0.1.0-1_arm64.deb -o beskar.deb
+rm -f beskar.deb
 
+# If repo/release is private, authenticate first:
+if ! gh auth status 2>/dev/null; then
+  echo "Not authenticated with GitHub CLI. Please log in."
+  gh auth login
+fi
+
+release_name=$(gh release list -R Mandoa-Labs/beskar --limit 1 --json tagName --jq '.[0].tagName')
+
+gh release download "$release_name" \
+  -R Mandoa-Labs/beskar \
+  -O beskar.deb
+    
+# Verify it's really a Debian package
+file beskar.deb
+dpkg-deb -I beskar.deb | head
+
+# Install
 sudo dpkg -i beskar.deb
 
-beskar
+which beskar
+rm -f beskar.deb
 ```
 
 ## Build & Run
