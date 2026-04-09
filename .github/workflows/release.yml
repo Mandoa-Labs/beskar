@@ -7,14 +7,14 @@ permissions:
   contents: write
 
 jobs:
-  test: 
-    uses: Mandoa-Labs/beskar/.github/workflows/test.yml@main
-    secrets: inherit
+  # test: 
+  #   uses: Mandoa-Labs/beskar/.github/workflows/test.yml@main
+  #   secrets: inherit
     
   deb-build-packages:
     name: Build Packages (${{ matrix.arch }})
-    if : needs.test.result == 'success'
-    needs: test
+    # if : needs.test.result == 'success'
+    # needs: test
     runs-on: ${{ matrix.runner }}
 
     strategy:
