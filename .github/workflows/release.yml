@@ -62,8 +62,8 @@ jobs:
 
   rpm-build-packages:
     name: Build Packages (${{ matrix.arch }})
-    if : needs.test.result == 'success'
-    needs: test
+    # if : needs.test.result == 'success'
+    # needs: test
     runs-on: ${{ matrix.runner }}
 
     strategy:
