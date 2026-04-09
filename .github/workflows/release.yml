@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   test: 
-    uses: Mandoa-Labs/fake-agent/.github/workflows/test.yml@main
+    uses: Mandoa-Labs/beskar/.github/workflows/test.yml@main
     secrets: inherit
     
   deb-build-packages:
