@@ -60,55 +60,56 @@ jobs:
           name: debian-package-${{ matrix.arch }}
           path: target/${{ matrix.rust_target }}/debian/*.deb
 
-  rpm-build-packages:
-    name: Build Packages (${{ matrix.arch }})
-    # if : needs.test.result == 'success'
-    # needs: test
-    runs-on: ${{ matrix.runner }}
+  # rpm-build-packages:
+  #   name: Build Packages (${{ matrix.arch }})
+  #   # if : needs.test.result == 'success'
+  #   # needs: test
+  #   runs-on: ${{ matrix.runner }}
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-22.04
-            rust_target: x86_64-unknown-linux-gnu
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       include:
+  #         - arch: x86_64
+  #           runner: ubuntu-22.04
+  #           rust_target: x86_64-unknown-linux-gnu
 
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-            rust_target: aarch64-unknown-linux-gnu
+  #         - arch: aarch64
+  #           runner: ubuntu-24.04-arm
+  #           rust_target: aarch64-unknown-linux-gnu
 
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+  #   steps:
+  #     - name: Checkout source
+  #       uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
+  #     - name: Install Rust toolchain
+  #       uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         targets: ${{ matrix.rust_target }}
 
-      - name: Install cargo-generate-rpm
-        run: cargo install cargo-generate-rpm
+  #     - name: Install cargo-generate-rpm
+  #       run: cargo install cargo-generate-rpm
 
-      - name: Build binary
-        run: cargo build --release --target ${{ matrix.rust_target }}
+  #     - name: Build binary
+  #       run: cargo build --release --target ${{ matrix.rust_target }}
 
-      - name: Strip binary
-        run: strip target/${{ matrix.rust_target }}/release/fake_agent
+  #     - name: Strip binary
+  #       run: strip target/${{ matrix.rust_target }}/release/fake_agent
 
-      - name: Build RPM package
-        run: cargo generate-rpm --target ${{ matrix.rust_target }}
+  #     - name: Build RPM package
+  #       run: cargo generate-rpm --target ${{ matrix.rust_target }}
 
-      - name: Upload RPM package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rpm-package-${{ matrix.arch }}
-          path: target/${{ matrix.rust_target }}/generate-rpm/*.rpm
+  #     - name: Upload RPM package artifact
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: rpm-package-${{ matrix.arch }}
+  #         path: target/${{ matrix.rust_target }}/generate-rpm/*.rpm
 
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs:  [ deb-build-packages, rpm-build-packages ]
+    needs: deb-build-packages
+    # needs:  [ deb-build-packages, rpm-build-packages ]
 
     steps:
       - name: Download all artifacts
