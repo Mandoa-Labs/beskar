@@ -29,5 +29,4 @@ FROM debian:bookworm-slim AS runtime
 RUN --mount=type=bind,from=builder,source=/app/target/debian,target=/pkgs \
     dpkg -i /pkgs/*.deb || apt-get install -fy
 
-# Replace "my-app" with your binary name as defined in Cargo.toml [package] name
-CMD ["my-app"]
+CMD ["beskar"]
