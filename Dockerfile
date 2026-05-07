@@ -6,7 +6,10 @@
 FROM rust:1.88-slim-bookworm AS builder
 
 # Install cargo-deb and any build-time deps
-RUN cargo install cargo-deb
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo install cargo-deb
 
 WORKDIR /app
 
