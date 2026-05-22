@@ -48,6 +48,7 @@ fn create_tables(config: &utils::Config, table_name: &str) -> Result<()> {
             filename TEXT NOT NULL,
             source_path TEXT NOT NULL,
             content TEXT NOT NULL,
+            content_sha256 TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )"
     );
@@ -114,16 +115,56 @@ fn list_tables(config: &utils::Config) -> Result<()> {
     Ok(())
 }
 
+/// Adds the `content_sha256` column to an existing `{name}_documents` table if
+/// it isn't already present. Idempotent and a no-op for tables created by the
+/// current `--create` path.
+pub fn ensure_sha256_column<C: GenericClient>(client: &mut C, table_name: &str) -> Result<()> {
+    let sql = format!(
+        "ALTER TABLE {table_name}_documents ADD COLUMN IF NOT EXISTS content_sha256 TEXT"
+    );
+    client
+        .execute(&sql[..], &[])
+        .context("failed to ensure content_sha256 column exists")?;
+    Ok(())
+}
+
+pub fn find_document<C: GenericClient>(
+    client: &mut C,
+    table_name: &str,
+    source_path: &str,
+) -> Result<Option<(i32, Option<String>)>> {
+    let sql = format!(
+        "SELECT id, content_sha256 FROM {table_name}_documents WHERE source_path = $1 LIMIT 1"
+    );
+    let row = client
+        .query_opt(&sql[..], &[&source_path])
+        .context("failed to look up existing document")?;
+    Ok(row.map(|r| (r.get(0), r.get(1))))
+}
+
+pub fn delete_document<C: GenericClient>(
+    client: &mut C,
+    table_name: &str,
+    document_id: i32,
+) -> Result<()> {
+    let sql = format!("DELETE FROM {table_name}_documents WHERE id = $1");
+    client
+        .execute(&sql[..], &[&document_id])
+        .context("failed to delete document")?;
+    Ok(())
+}
+
 pub fn insert_document<C: GenericClient>(
     client: &mut C,
     table_name: &str,
     filename: &str,
     source_path: &str,
     content: &str,
+    content_sha256: &str,
 ) -> Result<i32> {
     let row = client.query_one(
-        &format!("INSERT INTO {table_name}_documents (filename, source_path, content) VALUES ($1, $2, $3) RETURNING id"),
-        &[&filename, &source_path, &content],
+        &format!("INSERT INTO {table_name}_documents (filename, source_path, content, content_sha256) VALUES ($1, $2, $3, $4) RETURNING id"),
+        &[&filename, &source_path, &content, &content_sha256],
     ).context("failed to insert document")?;
 
     Ok(row.get(0))
