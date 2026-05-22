@@ -106,6 +106,50 @@ pub fn insert_document(config: &utils::Config, table_name: &str, filename: &str,
     row.get(0)
 }
 
+pub struct RetrievedChunk {
+    pub filename: String,
+    pub chunk_index: i32,
+    pub content: String,
+}
+
+pub fn query_chunks(
+    config: &utils::Config,
+    table_name: &str,
+    embedding: &[f32],
+    k: usize,
+) -> Vec<RetrievedChunk> {
+    let mut client = connect(config);
+
+    let embedding_str = format!(
+        "[{}]",
+        embedding
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    let query = format!(
+        "SELECT d.filename, c.chunk_index, c.content \
+         FROM {table_name}_chunks c \
+         JOIN {table_name}_documents d ON c.document_id = d.id \
+         ORDER BY c.embedding <=> $1::vector \
+         LIMIT $2"
+    );
+
+    let rows = client
+        .query(&query[..], &[&embedding_str, &(k as i64)])
+        .expect("Failed to query chunks");
+
+    rows.iter()
+        .map(|row| RetrievedChunk {
+            filename: row.get(0),
+            chunk_index: row.get(1),
+            content: row.get(2),
+        })
+        .collect()
+}
+
 pub fn insert_chunks(config: &utils::Config, table_name: &str, document_id: i32, chunks: &[String], embeddings: &[Vec<f32>]) {
     let mut client = connect(config);
 
