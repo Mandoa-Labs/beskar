@@ -1,4 +1,3 @@
-#![allow(warnings)]
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 mod init;

@@ -11,10 +11,9 @@ const OPENAI_MODEL: &str = "gpt-4o-mini";
 const ANTHROPIC_MODEL: &str = "claude-sonnet-4-6";
 const ANTHROPIC_MAX_TOKENS: u32 = 4096;
 
-#[derive(Clone)]
-pub struct Message {
-    pub role: String,
-    pub content: String,
+struct Message {
+    role: String,
+    content: String,
 }
 
 pub fn generate(query_arg: Option<&str>, table_name: &str, top_k: usize) -> Result<()> {

@@ -28,11 +28,3 @@ pub fn read_config() -> io::Result<Config> {
     let path = format!("{}/beskar/config.yaml", dir.display());
     read_yaml_file(&path)
 }
-
-pub fn read_yaml(path: &str) -> io::Result<()> {
-    let config = read_yaml_file(path)?;
-
-    println!("PAT: {}", config.pat);
-
-    Ok(())
-}
