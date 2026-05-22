@@ -1,5 +1,5 @@
 #![allow(warnings)]
-// use std::io;
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 mod init;
 mod document;
@@ -50,27 +50,28 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         top_k: usize,
     }
-} 
+}
 
-fn main() {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Init => {
-            init::init();
+            init::init()?;
         },
         Commands::Db { create, drop, list, table_name } => {
-            if !create && !drop  && !list {
+            if !create && !drop && !list {
                 eprintln!("No flag provided. Use --help for options.");
-                return;
+                return Ok(());
             }
-            database::database(create, drop, list, table_name);
+            database::database(create, drop, list, table_name)?;
         },
         Commands::Document { path, table_name } => {
-            document::document(&path, &table_name);
+            document::document(&path, &table_name)?;
         },
         Commands::Generate { query, table_name, top_k } => {
-            generate::generate(query.as_deref(), &table_name, top_k);
+            generate::generate(query.as_deref(), &table_name, top_k)?;
         }
     }
+    Ok(())
 }

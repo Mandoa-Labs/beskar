@@ -1,12 +1,13 @@
 use std::fs;
-use std::path::Path;
+use anyhow::{Context, Result};
 use walkdir::WalkDir;
 use crate::utils;
 use crate::database;
 use crate::embed;
 
-pub fn document(path: &str, table_name: &str) {
-    let config = utils::read_config().expect("Failed to read config. Run `beskar init` first.");
+pub fn document(path: &str, table_name: &str) -> Result<()> {
+    let config = utils::read_config()
+        .context("failed to read config; run `beskar init` first")?;
     let chunk_size = 100;
     let overlap = 5;
 
@@ -21,19 +22,21 @@ pub fn document(path: &str, table_name: &str) {
         }
 
         println!("Processing: {}", file_path.display());
-        let content = fs::read_to_string(file_path).expect("Failed to read file");
+        let content = fs::read_to_string(file_path)
+            .with_context(|| format!("failed to read {}", file_path.display()))?;
         let chunks = chunk_text(&content, chunk_size, overlap);
         println!("Created {} chunks for {}", chunks.len(), file_path.display());
 
         let filename = file_path.file_name().unwrap().to_str().unwrap();
         let source_path = file_path.to_str().unwrap();
-        let doc_id = database::insert_document(&config, table_name, filename, source_path, &content);
+        let doc_id = database::insert_document(&config, table_name, filename, source_path, &content)?;
 
-        let embeddings = embed::embed_chunks(&config.pat, &chunks);
-        database::insert_chunks(&config, table_name, doc_id, &chunks, &embeddings);
+        let embeddings = embed::embed_chunks(&config.pat, &chunks)?;
+        database::insert_chunks(&config, table_name, doc_id, &chunks, &embeddings)?;
 
         println!("Saved '{}' (doc_id={}) with {} chunks", filename, doc_id, chunks.len());
     }
+    Ok(())
 }
 
 fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
