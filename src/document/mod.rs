@@ -8,6 +8,7 @@ use crate::embed;
 pub fn document(path: &str, table_name: &str) -> Result<()> {
     let config = utils::read_config()
         .context("failed to read config; run `beskar init` first")?;
+    let mut client = database::connect(&config)?;
     let chunk_size = 100;
     let overlap = 5;
 
@@ -29,10 +30,10 @@ pub fn document(path: &str, table_name: &str) -> Result<()> {
 
         let filename = file_path.file_name().unwrap().to_str().unwrap();
         let source_path = file_path.to_str().unwrap();
-        let doc_id = database::insert_document(&config, table_name, filename, source_path, &content)?;
+        let doc_id = database::insert_document(&mut client, table_name, filename, source_path, &content)?;
 
         let embeddings = embed::embed_chunks(&config.pat, &chunks)?;
-        database::insert_chunks(&config, table_name, doc_id, &chunks, &embeddings)?;
+        database::insert_chunks(&mut client, table_name, doc_id, &chunks, &embeddings)?;
 
         println!("Saved '{}' (doc_id={}) with {} chunks", filename, doc_id, chunks.len());
     }

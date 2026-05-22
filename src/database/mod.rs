@@ -1,10 +1,10 @@
 use crate::utils;
 use anyhow::{Context, Result};
 use openssl::ssl::{SslConnector, SslMethod};
-use postgres::Client;
+use postgres::{Client, GenericClient};
 use postgres_openssl::MakeTlsConnector;
 
-fn connect(config: &utils::Config) -> Result<Client> {
+pub fn connect(config: &utils::Config) -> Result<Client> {
     let conn_string = format!(
         "host={} user={} port={} dbname={} password={} sslmode=require",
         config.pghost, config.pguser, config.pgport, config.pgdatabase, config.pgpassword
@@ -114,15 +114,13 @@ fn list_tables(config: &utils::Config) -> Result<()> {
     Ok(())
 }
 
-pub fn insert_document(
-    config: &utils::Config,
+pub fn insert_document<C: GenericClient>(
+    client: &mut C,
     table_name: &str,
     filename: &str,
     source_path: &str,
     content: &str,
 ) -> Result<i32> {
-    let mut client = connect(config)?;
-
     let row = client.query_one(
         &format!("INSERT INTO {table_name}_documents (filename, source_path, content) VALUES ($1, $2, $3) RETURNING id"),
         &[&filename, &source_path, &content],
@@ -175,24 +173,61 @@ pub fn query_chunks(
         .collect())
 }
 
-pub fn insert_chunks(
-    config: &utils::Config,
+/// Batched multi-row INSERT. Each batch sends up to BATCH_SIZE rows in a single
+/// statement, so a 1000-chunk document is ~10 round-trips instead of 1000.
+pub fn insert_chunks<C: GenericClient>(
+    client: &mut C,
     table_name: &str,
     document_id: i32,
     chunks: &[String],
     embeddings: &[Vec<f32>],
 ) -> Result<()> {
-    let mut client = connect(config)?;
+    const BATCH_SIZE: usize = 100;
+    if chunks.is_empty() {
+        return Ok(());
+    }
 
-    for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.iter()).enumerate() {
-        let embedding_str = format!(
-            "[{}]",
-            embedding.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+    for batch_start in (0..chunks.len()).step_by(BATCH_SIZE) {
+        let batch_end = std::cmp::min(batch_start + BATCH_SIZE, chunks.len());
+        let batch_len = batch_end - batch_start;
+
+        let mut placeholders = Vec::with_capacity(batch_len);
+        for i in 0..batch_len {
+            let base = i * 4;
+            placeholders.push(format!(
+                "(${}, ${}, ${}, ${}::vector)",
+                base + 1, base + 2, base + 3, base + 4
+            ));
+        }
+        let values_sql = placeholders.join(", ");
+        let sql = format!(
+            "INSERT INTO {table_name}_chunks (document_id, chunk_index, content, embedding) VALUES {values_sql}"
         );
-        client.execute(
-            &format!("INSERT INTO {table_name}_chunks (document_id, chunk_index, content, embedding) VALUES ($1, $2, $3, $4::vector)"),
-            &[&document_id, &(i as i32), &chunk.as_str(), &embedding_str],
-        ).context("failed to insert chunk")?;
+
+        let embedding_strs: Vec<String> = embeddings[batch_start..batch_end]
+            .iter()
+            .map(|e| {
+                format!(
+                    "[{}]",
+                    e.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+                )
+            })
+            .collect();
+        let chunk_indices: Vec<i32> = (batch_start..batch_end).map(|i| i as i32).collect();
+        let doc_ids: Vec<i32> = std::iter::repeat(document_id).take(batch_len).collect();
+
+        let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> =
+            Vec::with_capacity(batch_len * 4);
+        for i in 0..batch_len {
+            params.push(&doc_ids[i]);
+            params.push(&chunk_indices[i]);
+            params.push(&chunks[batch_start + i]);
+            params.push(&embedding_strs[i]);
+        }
+
+        client
+            .execute(&sql[..], &params[..])
+            .context("failed to insert chunk batch")?;
     }
 
     println!("Inserted {} chunks for document_id={}", chunks.len(), document_id);
