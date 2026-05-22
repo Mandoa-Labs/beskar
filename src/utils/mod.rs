@@ -5,6 +5,10 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub pat: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub anthropic_key: Option<String>,
     pub pghost: String,
     pub pguser: String,
     pub pgport: String,

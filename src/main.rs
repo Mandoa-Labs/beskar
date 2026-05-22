@@ -5,6 +5,7 @@ mod init;
 mod document;
 mod generate;
 mod database;
+mod embed;
 mod utils;
 
 /// Main CLI application
@@ -39,7 +40,16 @@ enum Commands {
         #[arg(long)]
         table_name: String,
     },
-    Generate
+    Generate {
+        #[arg(long)]
+        query: Option<String>,
+
+        #[arg(long)]
+        table_name: String,
+
+        #[arg(long, default_value_t = 5)]
+        top_k: usize,
+    }
 } 
 
 fn main() {
@@ -59,8 +69,8 @@ fn main() {
         Commands::Document { path, table_name } => {
             document::document(&path, &table_name);
         },
-        Commands::Generate => {
-            generate::generate();
+        Commands::Generate { query, table_name, top_k } => {
+            generate::generate(query.as_deref(), &table_name, top_k);
         }
     }
 }

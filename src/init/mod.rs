@@ -40,21 +40,46 @@ fn user_input(prompt: &str) -> String {
 
     _s
 }
-fn build_yaml(pat: &str, pghost: &str, pguser: &str, pgport: &str, pgdatabase: &str, pgpassword: &str) -> String {
-    format!(
+fn build_yaml(
+    pat: &str,
+    provider: &str,
+    anthropic_key: &str,
+    pghost: &str,
+    pguser: &str,
+    pgport: &str,
+    pgdatabase: &str,
+    pgpassword: &str,
+) -> String {
+    let mut out = format!(
         r#"pat: {}
-pghost: {}
+provider: {}
+"#,
+        pat, provider
+    );
+    if !anthropic_key.is_empty() {
+        out.push_str(&format!("anthropic_key: {}\n", anthropic_key));
+    }
+    out.push_str(&format!(
+        r#"pghost: {}
 pguser: {}
 pgport: {}
 pgdatabase: {}
 pgpassword: {}
 "#,
-        pat, pghost, pguser, pgport, pgdatabase, pgpassword
-    )
+        pghost, pguser, pgport, pgdatabase, pgpassword
+    ));
+    out
 }
 
 pub fn init(){
-    let pat = user_input("Enter PAT: ");
+    let pat = user_input("Enter PAT (OpenAI key, used for embeddings): ");
+    let provider = user_input("Enter PROVIDER for `generate` (openai | anthropic, default openai): ");
+    let provider = if provider.is_empty() { "openai".to_string() } else { provider };
+    let anthropic_key = if provider == "anthropic" {
+        user_input("Enter ANTHROPIC_KEY: ")
+    } else {
+        String::new()
+    };
     let pghost = user_input("Enter PGHOST: ");
     let pguser = user_input("Enter PGUSER: ");
     let pgport = user_input("Enter PGPORT (default 5432): ");
@@ -63,7 +88,7 @@ pub fn init(){
     let pgdatabase = if pgdatabase.is_empty() { "postgres".to_string() } else { pgdatabase };
     let pgpassword = user_input("Enter PGPASSWORD: ");
 
-    let yaml = build_yaml(&pat, &pghost, &pguser, &pgport, &pgdatabase, &pgpassword);
+    let yaml = build_yaml(&pat, &provider, &anthropic_key, &pghost, &pguser, &pgport, &pgdatabase, &pgpassword);
     write(&yaml).expect("Failed to write to file");
 }
 
@@ -74,8 +99,10 @@ mod tests {
 
     #[test]
     fn test_build_yaml() {
-        let yaml = build_yaml("test_pat", "localhost", "user", "5432", "testdb", "pass");
+        let yaml = build_yaml("test_pat", "openai", "", "localhost", "user", "5432", "testdb", "pass");
         assert!(yaml.contains("pat: test_pat"));
+        assert!(yaml.contains("provider: openai"));
+        assert!(!yaml.contains("anthropic_key"));
         assert!(yaml.contains("pghost: localhost"));
         assert!(yaml.contains("pguser: user"));
         assert!(yaml.contains("pgport: 5432"));
@@ -84,8 +111,15 @@ mod tests {
     }
 
     #[test]
+    fn test_build_yaml_with_anthropic_key() {
+        let yaml = build_yaml("test_pat", "anthropic", "sk-ant-xxx", "localhost", "user", "5432", "testdb", "pass");
+        assert!(yaml.contains("provider: anthropic"));
+        assert!(yaml.contains("anthropic_key: sk-ant-xxx"));
+    }
+
+    #[test]
     fn test_write_and_read_config() {
-        let yaml = build_yaml("my_pat", "myhost", "myuser", "5432", "mydb", "mypass");
+        let yaml = build_yaml("my_pat", "openai", "", "myhost", "myuser", "5432", "mydb", "mypass");
         write(&yaml).expect("Failed to write config");
 
         let dir = config_dir();
