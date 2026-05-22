@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
 
+use anyhow::{bail, Context, Result};
+
 use crate::database::{self, RetrievedChunk};
 use crate::embed;
 use crate::utils;
@@ -9,14 +11,14 @@ const OPENAI_MODEL: &str = "gpt-4o-mini";
 const ANTHROPIC_MODEL: &str = "claude-sonnet-4-6";
 const ANTHROPIC_MAX_TOKENS: u32 = 4096;
 
-#[derive(Clone)]
-pub struct Message {
-    pub role: String,
-    pub content: String,
+struct Message {
+    role: String,
+    content: String,
 }
 
-pub fn generate(query_arg: Option<&str>, table_name: &str, top_k: usize) {
-    let config = utils::read_config().expect("Failed to read config. Run `beskar init` first.");
+pub fn generate(query_arg: Option<&str>, table_name: &str, top_k: usize) -> Result<()> {
+    let config = utils::read_config()
+        .context("failed to read config; run `beskar init` first")?;
 
     let query = match query_arg {
         Some(q) => q.to_string(),
@@ -24,40 +26,41 @@ pub fn generate(query_arg: Option<&str>, table_name: &str, top_k: usize) {
             let mut buf = String::new();
             io::stdin()
                 .read_to_string(&mut buf)
-                .expect("Failed to read query from stdin");
+                .context("failed to read query from stdin")?;
             buf.trim().to_string()
         }
     };
 
     if query.is_empty() {
         eprintln!("No query provided. Pass --query or pipe text on stdin.");
-        return;
+        return Ok(());
     }
 
-    let query_embedding = embed::embed_one(&config.pat, &query);
-    let chunks = database::query_chunks(&config, table_name, &query_embedding, top_k);
+    let query_embedding = embed::embed_one(&config.pat, &query)?;
+    let chunks = database::query_chunks(&config, table_name, &query_embedding, top_k)?;
 
     if chunks.is_empty() {
         eprintln!("No chunks found in '{}_chunks'. Has the corpus been ingested?", table_name);
-        return;
+        return Ok(());
     }
 
     let messages = build_messages(&query, &chunks);
 
     let provider = config.provider.as_deref().unwrap_or("openai");
     match provider {
-        "openai" => stream_openai(&config.pat, &messages),
+        "openai" => stream_openai(&config.pat, &messages)?,
         "anthropic" => {
             let key = config
                 .anthropic_key
                 .as_deref()
-                .expect("provider=anthropic but no anthropic_key in config. Re-run `beskar init`.");
-            stream_anthropic(key, &messages);
+                .context("provider=anthropic but no anthropic_key in config; re-run `beskar init`")?;
+            stream_anthropic(key, &messages)?;
         }
-        other => panic!("Unknown provider '{}'. Expected 'openai' or 'anthropic'.", other),
+        other => bail!("Unknown provider '{}'. Expected 'openai' or 'anthropic'.", other),
     }
 
     print_citations(&chunks);
+    Ok(())
 }
 
 fn build_messages(query: &str, chunks: &[RetrievedChunk]) -> Vec<Message> {
@@ -82,7 +85,7 @@ fn build_messages(query: &str, chunks: &[RetrievedChunk]) -> Vec<Message> {
     ]
 }
 
-fn stream_openai(api_key: &str, messages: &[Message]) {
+fn stream_openai(api_key: &str, messages: &[Message]) -> Result<()> {
     let openai_messages: Vec<_> = messages
         .iter()
         .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
@@ -100,12 +103,12 @@ fn stream_openai(api_key: &str, messages: &[Message]) {
         .header("Authorization", format!("Bearer {}", api_key))
         .json(&body)
         .send()
-        .expect("Failed to call OpenAI chat API");
+        .context("failed to call OpenAI chat API")?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().unwrap_or_default();
-        panic!("OpenAI returned {}: {}", status, text);
+        bail!("OpenAI chat API returned {}: {}", status, text);
     }
 
     let reader = BufReader::new(resp);
@@ -133,9 +136,10 @@ fn stream_openai(api_key: &str, messages: &[Message]) {
         }
     }
     writeln!(out).ok();
+    Ok(())
 }
 
-fn stream_anthropic(api_key: &str, messages: &[Message]) {
+fn stream_anthropic(api_key: &str, messages: &[Message]) -> Result<()> {
     let system = messages
         .iter()
         .find(|m| m.role == "system")
@@ -164,12 +168,12 @@ fn stream_anthropic(api_key: &str, messages: &[Message]) {
         .header("content-type", "application/json")
         .json(&body)
         .send()
-        .expect("Failed to call Anthropic API");
+        .context("failed to call Anthropic messages API")?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().unwrap_or_default();
-        panic!("Anthropic returned {}: {}", status, text);
+        bail!("Anthropic messages API returned {}: {}", status, text);
     }
 
     let reader = BufReader::new(resp);
@@ -196,6 +200,7 @@ fn stream_anthropic(api_key: &str, messages: &[Message]) {
         }
     }
     writeln!(out).ok();
+    Ok(())
 }
 
 fn print_citations(chunks: &[RetrievedChunk]) {

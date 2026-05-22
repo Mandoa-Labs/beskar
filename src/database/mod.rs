@@ -1,42 +1,46 @@
 use crate::utils;
+use anyhow::{Context, Result};
 use openssl::ssl::{SslConnector, SslMethod};
-use postgres::Client;
+use postgres::{Client, GenericClient};
 use postgres_openssl::MakeTlsConnector;
 
-fn connect(config: &utils::Config) -> Client {
+pub fn connect(config: &utils::Config) -> Result<Client> {
     let conn_string = format!(
         "host={} user={} port={} dbname={} password={} sslmode=require",
         config.pghost, config.pguser, config.pgport, config.pgdatabase, config.pgpassword
     );
 
-    let builder = SslConnector::builder(SslMethod::tls()).expect("Failed to create SSL connector");
+    let builder = SslConnector::builder(SslMethod::tls())
+        .context("failed to create SSL connector")?;
     let connector = MakeTlsConnector::new(builder.build());
 
     Client::connect(&conn_string, connector)
-        .expect("Failed to connect to PostgreSQL")
+        .context("failed to connect to PostgreSQL")
 }
 
-pub fn database(create: bool, drop: bool, list: bool, table_name: Option<String>) {
-    let config = utils::read_config().expect("Failed to read config. Run `beskar init` first.");
+pub fn database(create: bool, drop: bool, list: bool, table_name: Option<String>) -> Result<()> {
+    let config = utils::read_config()
+        .context("failed to read config; run `beskar init` first")?;
 
     if create {
-        let name = table_name.as_deref().expect("--table-name is required with --create");
-        create_tables(&config, name);
+        let name = table_name.as_deref().context("--table-name is required with --create")?;
+        create_tables(&config, name)?;
     }
     if drop {
-        let name = table_name.as_deref().expect("--table-name is required with --drop");
-        drop_tables(&config, name);
+        let name = table_name.as_deref().context("--table-name is required with --drop")?;
+        drop_tables(&config, name)?;
     }
     if list {
-        list_tables(&config);
+        list_tables(&config)?;
     }
+    Ok(())
 }
 
-fn create_tables(config: &utils::Config, table_name: &str) {
-    let mut client = connect(config);
+fn create_tables(config: &utils::Config, table_name: &str) -> Result<()> {
+    let mut client = connect(config)?;
 
     client.execute("CREATE EXTENSION IF NOT EXISTS vector", &[])
-        .expect("Failed to create vector extension");
+        .context("failed to create vector extension")?;
 
     let documents_query = format!(
         "CREATE TABLE IF NOT EXISTS {table_name}_documents (
@@ -44,10 +48,12 @@ fn create_tables(config: &utils::Config, table_name: &str) {
             filename TEXT NOT NULL,
             source_path TEXT NOT NULL,
             content TEXT NOT NULL,
+            content_sha256 TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )"
     );
-    client.execute(&documents_query[..], &[]).expect("Failed to create documents table");
+    client.execute(&documents_query[..], &[])
+        .context("failed to create documents table")?;
     println!("Table '{table_name}_documents' created successfully.");
 
     let chunks_query = format!(
@@ -60,36 +66,42 @@ fn create_tables(config: &utils::Config, table_name: &str) {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )"
     );
-    client.execute(&chunks_query[..], &[]).expect("Failed to create chunks table");
+    client.execute(&chunks_query[..], &[])
+        .context("failed to create chunks table")?;
     println!("Table '{table_name}_chunks' created successfully.");
 
     let index_query = format!(
         "CREATE INDEX IF NOT EXISTS {table_name}_chunks_embedding_idx \
          ON {table_name}_chunks USING hnsw (embedding vector_cosine_ops)"
     );
-    client.execute(&index_query[..], &[]).expect("Failed to create vector index");
+    client.execute(&index_query[..], &[])
+        .context("failed to create vector index")?;
     println!("Index '{table_name}_chunks_embedding_idx' created successfully.");
+    Ok(())
 }
 
-fn drop_tables(config: &utils::Config, table_name: &str) {
-    let mut client = connect(config);
+fn drop_tables(config: &utils::Config, table_name: &str) -> Result<()> {
+    let mut client = connect(config)?;
 
     let chunks_query = format!("DROP TABLE IF EXISTS {table_name}_chunks");
-    client.execute(&chunks_query[..], &[]).expect("Failed to drop chunks table");
+    client.execute(&chunks_query[..], &[])
+        .context("failed to drop chunks table")?;
     println!("Table '{table_name}_chunks' dropped.");
 
     let documents_query = format!("DROP TABLE IF EXISTS {table_name}_documents");
-    client.execute(&documents_query[..], &[]).expect("Failed to drop documents table");
+    client.execute(&documents_query[..], &[])
+        .context("failed to drop documents table")?;
     println!("Table '{table_name}_documents' dropped.");
+    Ok(())
 }
 
-fn list_tables(config: &utils::Config) {
-    let mut client = connect(config);
+fn list_tables(config: &utils::Config) -> Result<()> {
+    let mut client = connect(config)?;
 
     let rows = client.query(
         "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename",
         &[],
-    ).expect("Failed to list tables");
+    ).context("failed to list tables")?;
 
     if rows.is_empty() {
         println!("No tables found.");
@@ -100,17 +112,62 @@ fn list_tables(config: &utils::Config) {
             println!("  - {name}");
         }
     }
+    Ok(())
 }
 
-pub fn insert_document(config: &utils::Config, table_name: &str, filename: &str, source_path: &str, content: &str) -> i32 {
-    let mut client = connect(config);
+/// Adds the `content_sha256` column to an existing `{name}_documents` table if
+/// it isn't already present. Idempotent and a no-op for tables created by the
+/// current `--create` path.
+pub fn ensure_sha256_column<C: GenericClient>(client: &mut C, table_name: &str) -> Result<()> {
+    let sql = format!(
+        "ALTER TABLE {table_name}_documents ADD COLUMN IF NOT EXISTS content_sha256 TEXT"
+    );
+    client
+        .execute(&sql[..], &[])
+        .context("failed to ensure content_sha256 column exists")?;
+    Ok(())
+}
 
+pub fn find_document<C: GenericClient>(
+    client: &mut C,
+    table_name: &str,
+    source_path: &str,
+) -> Result<Option<(i32, Option<String>)>> {
+    let sql = format!(
+        "SELECT id, content_sha256 FROM {table_name}_documents WHERE source_path = $1 LIMIT 1"
+    );
+    let row = client
+        .query_opt(&sql[..], &[&source_path])
+        .context("failed to look up existing document")?;
+    Ok(row.map(|r| (r.get(0), r.get(1))))
+}
+
+pub fn delete_document<C: GenericClient>(
+    client: &mut C,
+    table_name: &str,
+    document_id: i32,
+) -> Result<()> {
+    let sql = format!("DELETE FROM {table_name}_documents WHERE id = $1");
+    client
+        .execute(&sql[..], &[&document_id])
+        .context("failed to delete document")?;
+    Ok(())
+}
+
+pub fn insert_document<C: GenericClient>(
+    client: &mut C,
+    table_name: &str,
+    filename: &str,
+    source_path: &str,
+    content: &str,
+    content_sha256: &str,
+) -> Result<i32> {
     let row = client.query_one(
-        &format!("INSERT INTO {table_name}_documents (filename, source_path, content) VALUES ($1, $2, $3) RETURNING id"),
-        &[&filename, &source_path, &content],
-    ).expect("Failed to insert document");
+        &format!("INSERT INTO {table_name}_documents (filename, source_path, content, content_sha256) VALUES ($1, $2, $3, $4) RETURNING id"),
+        &[&filename, &source_path, &content, &content_sha256],
+    ).context("failed to insert document")?;
 
-    row.get(0)
+    Ok(row.get(0))
 }
 
 pub struct RetrievedChunk {
@@ -124,8 +181,8 @@ pub fn query_chunks(
     table_name: &str,
     embedding: &[f32],
     k: usize,
-) -> Vec<RetrievedChunk> {
-    let mut client = connect(config);
+) -> Result<Vec<RetrievedChunk>> {
+    let mut client = connect(config)?;
 
     let embedding_str = format!(
         "[{}]",
@@ -146,30 +203,74 @@ pub fn query_chunks(
 
     let rows = client
         .query(&query[..], &[&embedding_str, &(k as i64)])
-        .expect("Failed to query chunks");
+        .context("failed to query chunks")?;
 
-    rows.iter()
+    Ok(rows.iter()
         .map(|row| RetrievedChunk {
             filename: row.get(0),
             chunk_index: row.get(1),
             content: row.get(2),
         })
-        .collect()
+        .collect())
 }
 
-pub fn insert_chunks(config: &utils::Config, table_name: &str, document_id: i32, chunks: &[String], embeddings: &[Vec<f32>]) {
-    let mut client = connect(config);
+/// Batched multi-row INSERT. Each batch sends up to BATCH_SIZE rows in a single
+/// statement, so a 1000-chunk document is ~10 round-trips instead of 1000.
+pub fn insert_chunks<C: GenericClient>(
+    client: &mut C,
+    table_name: &str,
+    document_id: i32,
+    chunks: &[String],
+    embeddings: &[Vec<f32>],
+) -> Result<()> {
+    const BATCH_SIZE: usize = 100;
+    if chunks.is_empty() {
+        return Ok(());
+    }
 
-    for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.iter()).enumerate() {
-        let embedding_str = format!(
-            "[{}]",
-            embedding.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+    for batch_start in (0..chunks.len()).step_by(BATCH_SIZE) {
+        let batch_end = std::cmp::min(batch_start + BATCH_SIZE, chunks.len());
+        let batch_len = batch_end - batch_start;
+
+        let mut placeholders = Vec::with_capacity(batch_len);
+        for i in 0..batch_len {
+            let base = i * 4;
+            placeholders.push(format!(
+                "(${}, ${}, ${}, ${}::vector)",
+                base + 1, base + 2, base + 3, base + 4
+            ));
+        }
+        let values_sql = placeholders.join(", ");
+        let sql = format!(
+            "INSERT INTO {table_name}_chunks (document_id, chunk_index, content, embedding) VALUES {values_sql}"
         );
-        client.execute(
-            &format!("INSERT INTO {table_name}_chunks (document_id, chunk_index, content, embedding) VALUES ($1, $2, $3, $4::vector)"),
-            &[&document_id, &(i as i32), &chunk.as_str(), &embedding_str],
-        ).expect("Failed to insert chunk");
+
+        let embedding_strs: Vec<String> = embeddings[batch_start..batch_end]
+            .iter()
+            .map(|e| {
+                format!(
+                    "[{}]",
+                    e.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+                )
+            })
+            .collect();
+        let chunk_indices: Vec<i32> = (batch_start..batch_end).map(|i| i as i32).collect();
+        let doc_ids: Vec<i32> = std::iter::repeat(document_id).take(batch_len).collect();
+
+        let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> =
+            Vec::with_capacity(batch_len * 4);
+        for i in 0..batch_len {
+            params.push(&doc_ids[i]);
+            params.push(&chunk_indices[i]);
+            params.push(&chunks[batch_start + i]);
+            params.push(&embedding_strs[i]);
+        }
+
+        client
+            .execute(&sql[..], &params[..])
+            .context("failed to insert chunk batch")?;
     }
 
     println!("Inserted {} chunks for document_id={}", chunks.len(), document_id);
+    Ok(())
 }

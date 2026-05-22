@@ -2,6 +2,7 @@ use std::fs;
 use std::io;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
+use anyhow::{Context, Result};
 // use crate::utils;
 
 fn config_dir() -> String {
@@ -71,7 +72,7 @@ pgpassword: {}
     out
 }
 
-pub fn init(){
+pub fn init() -> Result<()> {
     let pat = user_input("Enter PAT (OpenAI key, used for embeddings): ");
     let provider = user_input("Enter PROVIDER for `generate` (openai | anthropic, default openai): ");
     let provider = if provider.is_empty() { "openai".to_string() } else { provider };
@@ -89,7 +90,8 @@ pub fn init(){
     let pgpassword = user_input("Enter PGPASSWORD: ");
 
     let yaml = build_yaml(&pat, &provider, &anthropic_key, &pghost, &pguser, &pgport, &pgdatabase, &pgpassword);
-    write(&yaml).expect("Failed to write to file");
+    write(&yaml).context("failed to write config")?;
+    Ok(())
 }
 
 #[cfg(test)]
