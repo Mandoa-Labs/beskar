@@ -62,6 +62,13 @@ fn create_tables(config: &utils::Config, table_name: &str) {
     );
     client.execute(&chunks_query[..], &[]).expect("Failed to create chunks table");
     println!("Table '{table_name}_chunks' created successfully.");
+
+    let index_query = format!(
+        "CREATE INDEX IF NOT EXISTS {table_name}_chunks_embedding_idx \
+         ON {table_name}_chunks USING hnsw (embedding vector_cosine_ops)"
+    );
+    client.execute(&index_query[..], &[]).expect("Failed to create vector index");
+    println!("Index '{table_name}_chunks_embedding_idx' created successfully.");
 }
 
 fn drop_tables(config: &utils::Config, table_name: &str) {

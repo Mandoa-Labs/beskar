@@ -62,7 +62,7 @@ Each `--table-name` creates a pair: `{name}_documents` and `{name}_chunks`. User
 | ID | Requirement | Status |
 |----|-------------|--------|
 | F1 | `beskar init` collects PAT, PGHOST, PGUSER, PGPORT, PGDATABASE, PGPASSWORD; writes `config.yaml` with `0600`. | Implemented |
-| F2 | `beskar db --create --table-name X` enables `vector` extension and creates `X_documents` + `X_chunks` with FK + cascade. | Implemented |
+| F2 | `beskar db --create --table-name X` enables `vector` extension and creates `X_documents` + `X_chunks` (with HNSW cosine index on `embedding`) and FK + cascade. | Implemented |
 | F3 | `beskar db --drop --table-name X` drops both tables (chunks first). | Implemented |
 | F4 | `beskar db --list` lists all `public` tables. | Implemented |
 | F5 | `beskar document --path P --table-name X` walks `P`, ingests `.md`/`.txt`, chunks (size=100, overlap=5), embeds via OpenAI, persists. | Implemented |
@@ -129,8 +129,8 @@ Module layout (matches `src/`): `init`, `database`, `document`, `generate`, `uti
 
 ## 10. Open Questions
 
-1. **LLM provider for `generate`.** OpenAI (reuse PAT), Anthropic (preferred default per the repo's Claude-Code tooling), or pluggable via config? Recommendation: Anthropic Claude as default, with provider field in `config.yaml`.
-2. **Embedding model choice.** `text-embedding-3-small` is hardcoded; should it be configurable, and do we re-embed on model change?
+1. ~~**LLM provider for `generate`.**~~ **Resolved (PR #33):** pluggable via `provider` field in `config.yaml` (`openai` | `anthropic`), default `openai`. The Anthropic path additionally reads `anthropic_key`.
+2. ~~**Embedding model choice.**~~ **Resolved:** stays hardcoded at `text-embedding-3-small` for v1. The embedding dimension is bound to the `VECTOR(1536)` schema column, so changing the model is a corpus-wide migration (drop + reingest), not a per-config flip. Making it configurable without an explicit reingestion path would risk silent corruption from mixed-dimension or mixed-model corpora. Revisit if/when a migration command is added.
 3. **Multi-tenant table naming.** Should `--table-name` be required for `--list` to scope by prefix?
 4. **Windows packaging.** Worth shipping in v1, or defer until F7 is closed?
 5. **Repo ownership.** README points at `Mandoa-Labs/beskar`; confirm canonical release org before publishing v1.0.
