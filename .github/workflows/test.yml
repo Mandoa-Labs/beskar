@@ -40,6 +40,12 @@ jobs:
       - name: Run unit tests
         run: cargo test --verbose
 
+      - name: Build with optional format features (docx, pdf)
+        run: cargo build --features docx,pdf --verbose
+
+      - name: Run unit tests with optional format features (docx, pdf)
+        run: cargo test --features docx,pdf --verbose
+
       - name: Smoke-test CLI parsing (--help on every subcommand)
         run: |
           ./target/debug/beskar --help

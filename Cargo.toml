@@ -20,6 +20,17 @@ anyhow = "1"
 sha2 = "0.10"
 hex = "0.4"
 
+# Optional document-format extractors, enabled via the `docx` / `pdf` features.
+zip = { version = "2", optional = true }
+quick-xml = { version = "0.40", optional = true }
+pdf-extract = { version = "0.10", optional = true }
+
+[features]
+# Off by default: the stock build stays text-only (`.md` / `.txt`).
+# Enable with e.g. `cargo build --features docx,pdf`.
+docx = ["dep:zip", "dep:quick-xml"]
+pdf = ["dep:pdf-extract"]
+
 # Build openssl from source on platforms where a system openssl is not
 # reliably available (Windows, macOS). Linux still links dynamically so
 # the .deb retains a libssl dependency.
