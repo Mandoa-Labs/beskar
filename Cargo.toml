@@ -43,12 +43,11 @@ maintainer = "Evan Allen <evanallen13@github.com>"
 section = "utils"
 priority = "optional"
 
-[package.metadata.rpm]
-name = "beskar"
-release = "1"
-summary = "Rust CLI tool"
-description = "Beskar is a Rust-based command-line application."
-license = "MIT"
-
-[package.metadata.rpm.targets]
-beskar = { path = "/usr/bin/beskar" }
+# Read by `cargo generate-rpm` (the release workflow's RPM job). `assets` is
+# mandatory; name/version/license/summary are taken from `[package]`. With
+# `--target <triple>`, `target/release/` is rewritten to `target/<triple>/release/`.
+[package.metadata.generate-rpm]
+summary = "Rust CLI for building and querying a local RAG corpus on PostgreSQL + pgvector"
+assets = [
+    { source = "target/release/beskar", dest = "/usr/bin/beskar", mode = "755" },
+]
