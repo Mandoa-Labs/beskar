@@ -77,6 +77,23 @@ Ingest text into a corpus.
 
 Walks the directory for `.md` and `.txt` files, chunks them (size 100, overlap 5), embeds via OpenAI `text-embedding-3-small`, and persists chunks + embeddings.
 
+Files with other extensions are skipped. DOCX and PDF ingestion are available as opt-in build features (see [Optional document formats](#optional-document-formats)); when a `.docx`/`.pdf` is encountered in a build without the matching feature, it is skipped with a notice telling you how to enable it.
+
+## Optional document formats
+
+DOCX and PDF text extraction are gated behind Cargo features, **off by default**, so the stock build stays text-only and dependency-light:
+
+```bash
+cargo build --features docx        # add .docx ingestion
+cargo build --features pdf         # add .pdf ingestion
+cargo build --features docx,pdf    # both
+```
+
+- `docx` — extracts text from `word/document.xml` (via `zip` + `quick-xml`).
+- `pdf` — extracts text via `pdf-extract`.
+
+Extraction is best-effort plain text: paragraph and line breaks become newlines; images, tables, and formatting are not preserved. Released `.deb`/`.rpm` artifacts are built with default features (text-only) unless a release explicitly enables these.
+
 ### `beskar generate`
 
 Ask a question grounded in a corpus.
