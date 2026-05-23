@@ -7,14 +7,8 @@ permissions:
   contents: write
 
 jobs:
-  # test: 
-  #   uses: Mandoa-Labs/beskar/.github/workflows/test.yml@main
-  #   secrets: inherit
-    
   deb-build-packages:
-    name: Build Packages (${{ matrix.arch }})
-    # if : needs.test.result == 'success'
-    # needs: test
+    name: Build Debian (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
 
     strategy:
@@ -41,18 +35,18 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm
+          sudo apt-get install -y rpm libssl-dev pkg-config
 
       - name: Install cargo-deb
         run: cargo install cargo-deb
-      
+
       - name: Build Debian package
         env:
           CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
         run: |
           cargo deb \
             --target ${{ matrix.rust_target }} \
-            --no-strip 
+            --no-strip
 
       - name: Upload Debian package artifact
         uses: actions/upload-artifact@v4
@@ -60,56 +54,130 @@ jobs:
           name: debian-package-${{ matrix.arch }}
           path: target/${{ matrix.rust_target }}/debian/*.deb
 
-  # rpm-build-packages:
-  #   name: Build Packages (${{ matrix.arch }})
-  #   # if : needs.test.result == 'success'
-  #   # needs: test
-  #   runs-on: ${{ matrix.runner }}
+  rpm-build-packages:
+    name: Build RPM (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
 
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       include:
-  #         - arch: x86_64
-  #           runner: ubuntu-22.04
-  #           rust_target: x86_64-unknown-linux-gnu
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
 
-  #         - arch: aarch64
-  #           runner: ubuntu-24.04-arm
-  #           rust_target: aarch64-unknown-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
 
-  #   steps:
-  #     - name: Checkout source
-  #       uses: actions/checkout@v4
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-  #     - name: Install Rust toolchain
-  #       uses: dtolnay/rust-toolchain@stable
-  #       with:
-  #         targets: ${{ matrix.rust_target }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
-  #     - name: Install cargo-generate-rpm
-  #       run: cargo install cargo-generate-rpm
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
 
-  #     - name: Build binary
-  #       run: cargo build --release --target ${{ matrix.rust_target }}
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
 
-  #     - name: Strip binary
-  #       run: strip target/${{ matrix.rust_target }}/release/fake_agent
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.rust_target }}
 
-  #     - name: Build RPM package
-  #       run: cargo generate-rpm --target ${{ matrix.rust_target }}
+      - name: Strip binary
+        run: strip target/${{ matrix.rust_target }}/release/beskar
 
-  #     - name: Upload RPM package artifact
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: rpm-package-${{ matrix.arch }}
-  #         path: target/${{ matrix.rust_target }}/generate-rpm/*.rpm
+      - name: Build RPM package
+        run: cargo generate-rpm --target ${{ matrix.rust_target }}
+
+      - name: Upload RPM package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package-${{ matrix.arch }}
+          path: target/${{ matrix.rust_target }}/generate-rpm/*.rpm
+
+  macos-build-packages:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: macos-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            rust_target: aarch64-apple-darwin
+          - arch: x86_64
+            rust_target: x86_64-apple-darwin
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.rust_target }}
+
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          tar -C target/${{ matrix.rust_target }}/release \
+              -czf dist/beskar-macos-${{ matrix.arch }}.tar.gz \
+              beskar
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-package-${{ matrix.arch }}
+          path: dist/beskar-macos-${{ matrix.arch }}.tar.gz
+
+  windows-build-packages:
+    name: Build Windows (x86_64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive `
+            -Path target\x86_64-pc-windows-msvc\release\beskar.exe `
+            -DestinationPath dist\beskar-windows-x86_64.zip
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-x86_64
+          path: dist/beskar-windows-x86_64.zip
 
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: deb-build-packages
-    # needs:  [ deb-build-packages, rpm-build-packages ]
+    needs:
+      - deb-build-packages
+      - rpm-build-packages
+      - macos-build-packages
+      - windows-build-packages
 
     steps:
       - name: Download all artifacts
@@ -125,5 +193,7 @@ jobs:
           files: |
             artifacts/**/*.deb
             artifacts/**/*.rpm
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

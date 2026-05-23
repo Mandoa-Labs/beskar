@@ -20,6 +20,12 @@ anyhow = "1"
 sha2 = "0.10"
 hex = "0.4"
 
+# Build openssl from source on platforms where a system openssl is not
+# reliably available (Windows, macOS). Linux still links dynamically so
+# the .deb retains a libssl dependency.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
 
 [package.metadata.deb]
 maintainer = "Evan Allen <evanallen13@github.com>"
