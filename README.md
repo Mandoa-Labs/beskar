@@ -1,5 +1,8 @@
 # Beskar
 
+[![Test](https://github.com/Mandoa-Labs/beskar/actions/workflows/test.yml/badge.svg)](https://github.com/Mandoa-Labs/beskar/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/Mandoa-Labs/beskar?sort=semver)](https://github.com/Mandoa-Labs/beskar/releases/latest)
+
 Beskar is a Rust CLI for building and querying a local RAG (Retrieval-Augmented Generation) corpus backed by PostgreSQL + pgvector. Ingest a directory of `.md` / `.txt` files into your own Postgres instance, then ask grounded questions from the terminal.
 
 ## Installation
