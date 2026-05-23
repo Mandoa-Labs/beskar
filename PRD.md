@@ -2,13 +2,13 @@
 
 **Status:** Draft
 **Owner:** Evan Allen
-**Last updated:** 2026-05-22
+**Last updated:** 2026-05-23
 
 ## 1. Overview
 
 Beskar is a single-binary Rust CLI for building and querying a Retrieval-Augmented Generation (RAG) corpus backed by PostgreSQL + pgvector. It targets developers who want to ingest local documents (notes, docs, code-adjacent text) into a vector store they own, and then run grounded LLM generations over that corpus from the terminal.
 
-Distribution today is via Debian package (`.deb`) attached to GitHub releases under `Mandoa-Labs/beskar`; RPM packaging metadata is present but not yet wired into release.
+Distribution is via GitHub releases under `Mandoa-Labs/beskar`: Debian `.deb` and RPM `.rpm` packages (x86_64 + arm64), macOS tarballs (arm64 + x86_64), and a Windows x86_64 `.zip`.
 
 ## 2. Problem & Motivation
 
@@ -31,7 +31,7 @@ Existing RAG tooling tends to be either (a) hosted SaaS that requires uploading 
 - Web UI, daemon mode, or multi-user server.
 - Non-Postgres backends (sqlite-vec, LanceDB, etc.).
 - Non-OpenAI embedding providers.
-- Document parsing beyond plain text / Markdown (no PDF, DOCX, HTML extraction).
+- HTML extraction. (Plain text / Markdown are the default; DOCX and PDF were added opt-in behind Cargo feature flags in M4 — see §7.8 and §12.)
 
 ## 4. Target Users
 
@@ -66,9 +66,9 @@ Each `--table-name` creates a pair: `{name}_documents` and `{name}_chunks`. User
 | F3 | `beskar db --drop --table-name X` drops both tables (chunks first). | Implemented |
 | F4 | `beskar db --list` lists all `public` tables. | Implemented |
 | F5 | `beskar document --path P --table-name X` walks `P`, ingests `.md`/`.txt`, chunks (size=100, overlap=5), embeds via OpenAI, persists. | Implemented |
-| F6 | `beskar generate` accepts a query, retrieves top-K chunks by cosine similarity, sends them with the query to an LLM, prints the answer. | **Not implemented** (stub) |
-| F7 | Cross-platform build: Linux, macOS, Windows. | **Linux-only** today (init uses `std::os::unix::fs::OpenOptionsExt`) |
-| F8 | Release pipeline produces `.deb` (and ideally `.rpm`, macOS `.pkg`/`brew`, Windows `.msi`/winget) per tag. | `.deb` only |
+| F6 | `beskar generate` accepts a query, retrieves top-K chunks by cosine similarity, sends them with the query to an LLM, prints the answer. | Implemented |
+| F7 | Cross-platform build: Linux, macOS, Windows. | Implemented (config write split via `cfg(unix)`/`cfg(windows)`) |
+| F8 | Release pipeline produces `.deb` (and ideally `.rpm`, macOS `.pkg`/`brew`, Windows `.msi`/winget) per tag. | Implemented: `.deb` + `.rpm` (x86_64/arm64), macOS tarballs, Windows `.zip` |
 
 ## 7. Gaps & Proposed v1.1 Work
 
@@ -93,7 +93,7 @@ These are the concrete deltas between the current code and a usable RAG CLI:
 
 7. **`#![allow(warnings)]` removal.** Currently set in `main.rs`; should be removed and warnings fixed once modules stabilize.
 
-8. **Document format support.** `data/Test.docx` exists in the repo but ingestion skips it. Decide v1.1 scope: stay text-only, or add a `--ext` allowlist plus optional DOCX/PDF extractors behind feature flags.
+8. **Document format support.** ✅ **Resolved (#13).** DOCX and PDF extraction are implemented behind the off-by-default `docx` / `pdf` Cargo feature flags; the default build stays text-only.
 
 ## 8. Non-Functional Requirements
 
@@ -143,7 +143,7 @@ Module layout (matches `src/`): `init`, `database`, `document`, `generate`, `uti
 
 ## 12. Milestones
 
-- **M1 — RAG MVP:** Implement `generate` (F6) + vector index + Anthropic provider choice resolved. Unblocks dogfooding.
-- **M2 — Hardening:** Idempotent ingestion, batched inserts, `anyhow`-based errors, removal of `allow(warnings)`.
-- **M3 — Cross-platform:** Windows + macOS builds in release workflow; config-write path made portable.
-- **M4 — Format expansion:** Optional DOCX/PDF ingestion behind feature flags, only if user demand surfaces.
+- **M1 — RAG MVP:** ✅ **Complete.** Implement `generate` (F6) + vector index + Anthropic provider choice resolved. Unblocks dogfooding.
+- **M2 — Hardening:** ✅ **Complete.** Idempotent ingestion, batched inserts, `anyhow`-based errors, removal of `allow(warnings)`.
+- **M3 — Cross-platform:** ✅ **Complete.** Windows + macOS builds in release workflow; config-write path made portable. (Verified in `release-16`: `.deb`, `.rpm`, macOS tarballs, and Windows `.zip` all attached.)
+- **M4 — Format expansion:** ✅ **Complete.** Optional DOCX/PDF ingestion behind the off-by-default `docx` / `pdf` Cargo feature flags (#13); the default build stays text-only.
