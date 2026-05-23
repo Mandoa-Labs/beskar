@@ -124,7 +124,14 @@ fn docx_xml_to_text(xml: &str) -> String {
     let mut text = String::new();
     loop {
         match reader.read_event() {
-            Ok(Event::Text(e)) => text.push_str(&e.unescape().unwrap_or_default()),
+            Ok(Event::Text(e)) => {
+                if let Ok(raw) = e.decode() {
+                    match quick_xml::escape::unescape(&raw) {
+                        Ok(unescaped) => text.push_str(&unescaped),
+                        Err(_) => text.push_str(&raw),
+                    }
+                }
+            }
             Ok(Event::Empty(e)) => match e.name().as_ref() {
                 b"w:br" | b"w:cr" => text.push('\n'),
                 b"w:tab" => text.push('\t'),
