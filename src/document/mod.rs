@@ -125,10 +125,18 @@ fn docx_xml_to_text(xml: &str) -> String {
     loop {
         match reader.read_event() {
             Ok(Event::Text(e)) => {
-                if let Ok(raw) = e.decode() {
-                    match quick_xml::escape::unescape(&raw) {
-                        Ok(unescaped) => text.push_str(&unescaped),
-                        Err(_) => text.push_str(&raw),
+                if let Ok(decoded) = e.decode() {
+                    text.push_str(&decoded);
+                }
+            }
+            // In quick-xml 0.40, entity/char references (`&amp;`, `&#8217;`, ...)
+            // arrive as their own event rather than inside the text.
+            Ok(Event::GeneralRef(e)) => {
+                if let Ok(Some(ch)) = e.resolve_char_ref() {
+                    text.push(ch);
+                } else if let Ok(name) = e.decode() {
+                    if let Some(resolved) = quick_xml::escape::resolve_xml_entity(&name) {
+                        text.push_str(resolved);
                     }
                 }
             }
@@ -231,11 +239,11 @@ mod docx_tests {
     fn extracts_runs_and_separates_paragraphs() {
         let xml = r#"<w:document><w:body>
             <w:p><w:r><w:t>Hello</w:t></w:r><w:r><w:t xml:space="preserve"> world</w:t></w:r></w:p>
-            <w:p><w:r><w:t>Second &amp; line</w:t></w:r></w:p>
+            <w:p><w:r><w:t>Second &amp; caf&#233; line</w:t></w:r></w:p>
         </w:body></w:document>"#;
         let text = docx_xml_to_text(xml);
         assert!(text.contains("Hello world"), "runs in a paragraph join: {text:?}");
-        assert!(text.contains("Second & line"), "entities are unescaped: {text:?}");
+        assert!(text.contains("Second & café line"), "named + numeric refs resolve: {text:?}");
         // The two paragraphs are separated by a newline.
         let hello_line = text.lines().find(|l| l.contains("Hello")).unwrap();
         assert!(!hello_line.contains("Second"), "paragraphs are on separate lines: {text:?}");
