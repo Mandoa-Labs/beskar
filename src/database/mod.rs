@@ -1,37 +1,92 @@
 use crate::utils;
-use anyhow::{Context, Result};
-use openssl::ssl::{SslConnector, SslMethod};
-use postgres::{Client, GenericClient};
+use anyhow::{bail, Context, Result};
+use openssl::ssl::{SslConnector, SslFiletype, SslMethod, SslVerifyMode};
+use postgres::config::SslMode;
+use postgres::{Client, GenericClient, NoTls};
 use postgres_openssl::MakeTlsConnector;
 
+/// Connect to Postgres, building the connection from the [`postgres::Config`]
+/// builder so the password is never formatted into a string that could be
+/// logged or appear in process argv (PRD §6.2 E1.3).
+///
+/// TLS is configurable (E1.7): `disable` | `require` (encrypt, no verification)
+/// | `verify-ca` (verify chain against the pinned root CA) | `verify-full`
+/// (verify chain **and** hostname). Optional client cert/key enables mTLS.
 pub fn connect(config: &utils::Config) -> Result<Client> {
-    let conn_string = format!(
-        "host={} user={} port={} dbname={} password={} sslmode=require",
-        config.pghost, config.pguser, config.pgport, config.pgdatabase, config.pgpassword
-    );
+    let mut pg = postgres::Config::new();
+    let port: u16 = config
+        .pgport
+        .parse()
+        .with_context(|| format!("invalid pgport '{}'", config.pgport))?;
+    pg.host(&config.pghost)
+        .port(port)
+        .user(&config.pguser)
+        .dbname(&config.pgdatabase)
+        .password(config.pgpassword.as_str());
 
-    let builder = SslConnector::builder(SslMethod::tls())
-        .context("failed to create SSL connector")?;
-    let connector = MakeTlsConnector::new(builder.build());
+    let sslmode = config.tls.sslmode.as_str();
+    if sslmode == "disable" {
+        pg.ssl_mode(SslMode::Disable);
+        return pg.connect(NoTls).context("failed to connect to PostgreSQL");
+    }
+    pg.ssl_mode(SslMode::Require);
 
-    Client::connect(&conn_string, connector)
-        .context("failed to connect to PostgreSQL")
+    let mut builder =
+        SslConnector::builder(SslMethod::tls()).context("failed to create SSL connector")?;
+    match sslmode {
+        "require" => {
+            // Encrypt, but accept any server certificate (legacy default).
+            builder.set_verify(SslVerifyMode::NONE);
+        }
+        "verify-ca" | "verify-full" => {
+            if let Some(ca) = &config.tls.root_cert {
+                builder
+                    .set_ca_file(ca)
+                    .with_context(|| format!("failed to load Postgres root CA: {ca}"))?;
+            }
+        }
+        other => bail!(
+            "invalid pgsslmode '{other}' (expected disable|require|verify-ca|verify-full)"
+        ),
+    }
+    if let (Some(cert), Some(key)) = (&config.tls.client_cert, &config.tls.client_key) {
+        builder
+            .set_certificate_chain_file(cert)
+            .with_context(|| format!("failed to load client certificate: {cert}"))?;
+        builder
+            .set_private_key_file(key, SslFiletype::PEM)
+            .with_context(|| format!("failed to load client key: {key}"))?;
+    }
+
+    let mut connector = MakeTlsConnector::new(builder.build());
+    // require / verify-ca do not check the server hostname; verify-full does.
+    if sslmode != "verify-full" {
+        connector.set_callback(|cfg, _domain| {
+            cfg.set_verify_hostname(false);
+            Ok(())
+        });
+    }
+
+    pg.connect(connector).context("failed to connect to PostgreSQL")
 }
 
-pub fn database(create: bool, drop: bool, list: bool, table_name: Option<String>) -> Result<()> {
-    let config = utils::read_config()
-        .context("failed to read config; run `beskar init` first")?;
-
+pub fn database(
+    create: bool,
+    drop: bool,
+    list: bool,
+    table_name: Option<String>,
+    config: &utils::Config,
+) -> Result<()> {
     if create {
         let name = table_name.as_deref().context("--table-name is required with --create")?;
-        create_tables(&config, name)?;
+        create_tables(config, name)?;
     }
     if drop {
         let name = table_name.as_deref().context("--table-name is required with --drop")?;
-        drop_tables(&config, name)?;
+        drop_tables(config, name)?;
     }
     if list {
-        list_tables(&config)?;
+        list_tables(config)?;
     }
     Ok(())
 }
@@ -77,6 +132,8 @@ fn create_tables(config: &utils::Config, table_name: &str) -> Result<()> {
     client.execute(&index_query[..], &[])
         .context("failed to create vector index")?;
     println!("Index '{table_name}_chunks_embedding_idx' created successfully.");
+
+    ensure_meta_table(&mut client, table_name)?;
     Ok(())
 }
 
@@ -92,6 +149,10 @@ fn drop_tables(config: &utils::Config, table_name: &str) -> Result<()> {
     client.execute(&documents_query[..], &[])
         .context("failed to drop documents table")?;
     println!("Table '{table_name}_documents' dropped.");
+
+    let meta_query = format!("DROP TABLE IF EXISTS {table_name}_meta");
+    client.execute(&meta_query[..], &[])
+        .context("failed to drop meta table")?;
     Ok(())
 }
 
@@ -125,6 +186,50 @@ pub fn ensure_sha256_column<C: GenericClient>(client: &mut C, table_name: &str) 
     client
         .execute(&sql[..], &[])
         .context("failed to ensure content_sha256 column exists")?;
+    Ok(())
+}
+
+/// Ensure the `{name}_meta` table exists. It holds at most one row recording
+/// the embedding model + vector dimension a corpus was built with (E1.5).
+/// Idempotent, so it also backfills corpora created before M5.
+pub fn ensure_meta_table<C: GenericClient>(client: &mut C, table_name: &str) -> Result<()> {
+    let sql = format!(
+        "CREATE TABLE IF NOT EXISTS {table_name}_meta (embed_model TEXT NOT NULL, dim INTEGER NOT NULL)"
+    );
+    client
+        .execute(&sql[..], &[])
+        .context("failed to ensure corpus meta table exists")?;
+    Ok(())
+}
+
+/// Read the recorded `(embed_model, dim)` for a corpus, or `None` if it has not
+/// been ingested into yet (legacy corpus or freshly created).
+pub fn read_corpus_meta<C: GenericClient>(
+    client: &mut C,
+    table_name: &str,
+) -> Result<Option<(String, i32)>> {
+    let sql = format!("SELECT embed_model, dim FROM {table_name}_meta LIMIT 1");
+    let row = client
+        .query_opt(&sql[..], &[])
+        .context("failed to read corpus meta")?;
+    Ok(row.map(|r| (r.get(0), r.get(1))))
+}
+
+/// Record the embedding model + dimension a corpus is built with (one row).
+pub fn write_corpus_meta<C: GenericClient>(
+    client: &mut C,
+    table_name: &str,
+    embed_model: &str,
+    dim: i32,
+) -> Result<()> {
+    let del = format!("DELETE FROM {table_name}_meta");
+    client
+        .execute(&del[..], &[])
+        .context("failed to reset corpus meta")?;
+    let ins = format!("INSERT INTO {table_name}_meta (embed_model, dim) VALUES ($1, $2)");
+    client
+        .execute(&ins[..], &[&embed_model, &dim])
+        .context("failed to write corpus meta")?;
     Ok(())
 }
 
@@ -176,14 +281,12 @@ pub struct RetrievedChunk {
     pub content: String,
 }
 
-pub fn query_chunks(
-    config: &utils::Config,
+pub fn query_chunks<C: GenericClient>(
+    client: &mut C,
     table_name: &str,
     embedding: &[f32],
     k: usize,
 ) -> Result<Vec<RetrievedChunk>> {
-    let mut client = connect(config)?;
-
     let embedding_str = format!(
         "[{}]",
         embedding

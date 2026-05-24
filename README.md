@@ -16,6 +16,7 @@ Beskar is a Rust CLI for building and querying a local RAG (Retrieval-Augmented 
   - [From source](#from-source)
 - [Quickstart](#quickstart)
 - [Commands](#commands)
+- [Enterprise hardening](#enterprise-hardening)
 - [Optional document formats](#optional-document-formats)
 - [Build & test](#build--test)
 - [Project structure](#project-structure)
@@ -153,6 +154,98 @@ beskar generate --query "explain pgvector" --table-name notes
 echo "what is in the corpus?" | beskar generate --table-name notes --top-k 8
 ```
 
+### `beskar config lint`
+
+Audits `~/.config/beskar/config.yaml` and **exits non-zero** if it finds a
+problem — handy as a CI/pre-flight gate:
+
+- flags any secret (`pat`, `pgpassword`, `anthropic_key`, endpoint `api_key`)
+  stored as a plaintext literal rather than a [secret reference](#secret-backends),
+- flags lax file permissions (anything looser than `0600` on unix).
+
+## Enterprise hardening
+
+These controls (PRD §6.2 E1.1–E1.7) make beskar safe to run in regulated and
+air-gapped environments. All are opt-in: a config written before this milestone
+keeps working unchanged.
+
+### Global flags
+
+Available on every subcommand:
+
+- `--offline` — fail closed; refuse any outbound connection to a non-allowlisted host.
+- `--allow-host <HOST>` — permit an outbound host (repeatable). Subdomains of an entry are allowed.
+- `--ca-bundle <PATH>` — PEM CA bundle for outbound TLS (overrides the system store / `SSL_CERT_FILE`).
+- `--verbose` — print the effective config (secrets redacted) to stderr before running.
+
+`HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` are honored automatically. The hosts of
+configured endpoints and any Key Vault references are auto-added to the
+allowlist, so `--offline` against a self-hosted stack works while public vendors
+stay blocked.
+
+### Secret backends
+
+Any secret field may be a `scheme://` reference resolved at runtime instead of a
+literal on disk:
+
+```yaml
+pgpassword: azure-keyvault://mykv/beskar-pgpassword   # Azure Key Vault
+pat:        env://OPENAI_API_KEY                       # environment variable
+anthropic_key: secret://beskar-anthropic-key           # the default backend
+```
+
+`azure-keyvault` and `env` ship now; `vault`, `aws-secrets`, and `gcp-secrets`
+are recognized and stubbed for later milestones. The default backend for the
+generic `secret://` scheme comes from `secret_backend` in config or the
+`BESKAR_SECRET_BACKEND` environment variable. Azure auth uses
+`AZURE_KEYVAULT_TOKEN`, or `AZURE_TENANT_ID` + `AZURE_CLIENT_ID` +
+`AZURE_CLIENT_SECRET`. Secrets are never written to argv and are redacted from
+errors and `--verbose` output.
+
+### Private model endpoints
+
+The embedding and generation endpoints are configured independently and support
+`openai`, `openai-compatible` (any `base_url`), `azure-openai`, and `anthropic`
+(`bedrock` is stubbed):
+
+```yaml
+embed:
+  provider: openai-compatible
+  base_url: https://llm.internal/v1
+  model: bge-small
+  api_key: env://LLM_KEY
+generate:
+  provider: azure-openai
+  base_url: https://my-aoai.openai.azure.com
+  deployment: gpt-4o
+  api_version: "2024-02-01"
+  api_key: azure-keyvault://mykv/aoai-key
+```
+
+When unset, both default to OpenAI using `pat`.
+
+### Embedding model/dimension guard
+
+The model and vector dimension a corpus was first ingested with are recorded in
+a `{name}_meta` row. A later `document` or `generate` run whose configured model
+or dimension differs fails fast with a migration hint instead of silently mixing
+incompatible vectors.
+
+### Postgres TLS
+
+TLS is configurable per environment rather than hardcoded:
+
+```yaml
+pgsslmode: verify-full          # disable | require | verify-ca | verify-full
+pgsslrootcert: /etc/ssl/pg-ca.pem
+pgsslcert: /etc/ssl/client.pem   # optional mTLS
+pgsslkey:  /etc/ssl/client.key
+```
+
+`verify-ca` checks the chain against the pinned root CA; `verify-full` also
+verifies the server hostname. `require` (the default) encrypts without
+verification.
+
 ## Optional document formats
 
 DOCX and PDF text extraction are gated behind Cargo features, **off by default**, so the stock build stays text-only and dependency-light:
@@ -186,7 +279,9 @@ cargo fmt             # Format code
 - `src/document/` — `document` ingestion (walk, chunk, embed, persist)
 - `src/embed/` — Shared OpenAI embedding helpers used by ingestion + query
 - `src/generate/` — `generate` command (retrieve → compose → stream)
-- `src/utils/` — Shared config types + reader
+- `src/net/` — Outbound HTTP client + egress policy (proxy / CA bundle / allowlist / `--offline`)
+- `src/secrets/` — Pluggable secret backends (`scheme://` references) + redaction
+- `src/utils/` — Config parsing, secret resolution, and `config lint`
 - `terraform/` — Azure PostgreSQL Flexible Server with pgvector allowlisted
 
 ## License

@@ -1,17 +1,18 @@
 use std::fs;
 use std::path::Path;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
-use crate::utils;
+use crate::utils::Config;
 use crate::database;
 use crate::embed;
 
-pub fn document(path: &str, table_name: &str) -> Result<()> {
-    let config = utils::read_config()
-        .context("failed to read config; run `beskar init` first")?;
-    let mut client = database::connect(&config)?;
+pub fn document(path: &str, table_name: &str, config: &Config) -> Result<()> {
+    let mut client = database::connect(config)?;
     database::ensure_sha256_column(&mut client, table_name)?;
+    database::ensure_meta_table(&mut client, table_name)?;
+    // Embedding model/dimension recorded for this corpus, if any (E1.5).
+    let mut corpus_meta = database::read_corpus_meta(&mut client, table_name)?;
 
     let chunk_size = 100;
     let overlap = 5;
@@ -34,45 +35,52 @@ pub fn document(path: &str, table_name: &str) -> Result<()> {
         let source_path = file_path.to_str().unwrap();
 
         let existing = database::find_document(&mut client, table_name, source_path)?;
-        match existing {
-            Some((_, Some(prev_sha))) if prev_sha == sha => {
+        if let Some((_, Some(prev_sha))) = &existing {
+            if prev_sha == &sha {
                 println!("Unchanged, skipping: {}", file_path.display());
                 continue;
             }
-            Some((existing_id, _)) => {
-                let chunks = chunk_text(&content, chunk_size, overlap);
-                println!("Created {} chunks for {}", chunks.len(), file_path.display());
-                let embeddings = embed::embed_chunks(&config.pat, &chunks)?;
+        }
 
-                let mut tx = client.transaction().context("failed to begin transaction")?;
-                database::delete_document(&mut tx, table_name, existing_id)?;
-                let doc_id = database::insert_document(
-                    &mut tx, table_name, filename, source_path, &content, &sha,
-                )?;
-                database::insert_chunks(&mut tx, table_name, doc_id, &chunks, &embeddings)?;
-                tx.commit().context("failed to commit replacement transaction")?;
+        let chunks = chunk_text(&content, chunk_size, overlap);
+        println!("Created {} chunks for {}", chunks.len(), file_path.display());
+        let embeddings = embed::embed_chunks(config, &chunks)?;
 
-                println!(
-                    "Replaced '{}' (doc_id={}) with {} chunks", filename, doc_id, chunks.len()
-                );
-            }
-            None => {
-                let chunks = chunk_text(&content, chunk_size, overlap);
-                println!("Created {} chunks for {}", chunks.len(), file_path.display());
-                let embeddings = embed::embed_chunks(&config.pat, &chunks)?;
-
-                let mut tx = client.transaction().context("failed to begin transaction")?;
-                let doc_id = database::insert_document(
-                    &mut tx, table_name, filename, source_path, &content, &sha,
-                )?;
-                database::insert_chunks(&mut tx, table_name, doc_id, &chunks, &embeddings)?;
-                tx.commit().context("failed to commit insert transaction")?;
-
-                println!(
-                    "Saved '{}' (doc_id={}) with {} chunks", filename, doc_id, chunks.len()
-                );
+        // Embedding model/dimension guard (E1.5): on first ingest record the
+        // corpus's model + dimension; thereafter refuse a mismatched config.
+        if let Some(first) = embeddings.first() {
+            let dim = first.len() as i32;
+            match &corpus_meta {
+                Some((model, recorded_dim)) => {
+                    if model != &config.embed.model || *recorded_dim != dim {
+                        bail!(
+                            "embedding mismatch for corpus '{table_name}': it was built with model \
+                             '{model}' (dim {recorded_dim}), but the current config uses model '{}' \
+                             (dim {dim}). Re-create the corpus and re-ingest, or restore the original \
+                             embedding config.",
+                            config.embed.model
+                        );
+                    }
+                }
+                None => {
+                    database::write_corpus_meta(&mut client, table_name, &config.embed.model, dim)?;
+                    corpus_meta = Some((config.embed.model.clone(), dim));
+                }
             }
         }
+
+        let was_existing = existing.is_some();
+        let mut tx = client.transaction().context("failed to begin transaction")?;
+        if let Some((existing_id, _)) = existing {
+            database::delete_document(&mut tx, table_name, existing_id)?;
+        }
+        let doc_id =
+            database::insert_document(&mut tx, table_name, filename, source_path, &content, &sha)?;
+        database::insert_chunks(&mut tx, table_name, doc_id, &chunks, &embeddings)?;
+        tx.commit().context("failed to commit ingestion transaction")?;
+
+        let verb = if was_existing { "Replaced" } else { "Saved" };
+        println!("{verb} '{}' (doc_id={}) with {} chunks", filename, doc_id, chunks.len());
     }
     Ok(())
 }
