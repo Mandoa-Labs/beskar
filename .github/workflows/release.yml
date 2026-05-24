@@ -44,9 +44,11 @@ jobs:
         env:
           CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
         run: |
+          mkdir -p target/${{ matrix.rust_target }}/debian
           cargo deb \
             --target ${{ matrix.rust_target }} \
-            --no-strip
+            --no-strip \
+            --output target/${{ matrix.rust_target }}/debian/beskar-debian-${{ matrix.arch }}.deb
 
       - name: Upload Debian package artifact
         uses: actions/upload-artifact@v4
@@ -94,7 +96,11 @@ jobs:
         run: strip target/${{ matrix.rust_target }}/release/beskar
 
       - name: Build RPM package
-        run: cargo generate-rpm --target ${{ matrix.rust_target }}
+        run: |
+          mkdir -p target/${{ matrix.rust_target }}/generate-rpm
+          cargo generate-rpm \
+            --target ${{ matrix.rust_target }} \
+            --output target/${{ matrix.rust_target }}/generate-rpm/beskar-rpm-${{ matrix.arch }}.rpm
 
       - name: Upload RPM package artifact
         uses: actions/upload-artifact@v4
