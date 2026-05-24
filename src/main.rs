@@ -5,6 +5,8 @@ mod document;
 mod generate;
 mod database;
 mod embed;
+mod net;
+mod secrets;
 mod utils;
 
 /// Main CLI application
@@ -12,6 +14,9 @@ mod utils;
 #[command(name = "main")]
 #[command(about = "Example Rust CLI with subcommands and flags")]
 struct Cli {
+    #[command(flatten)]
+    globals: net::EgressArgs,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -19,6 +24,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Init,
+    /// Inspect configuration.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     Db {
         #[arg(long)]
         create: bool,
@@ -51,25 +61,51 @@ enum Commands {
     }
 }
 
-fn main() -> Result<()> {
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Flag plaintext secrets and lax file permissions; exits non-zero on findings.
+    Lint,
+}
+
+fn main() {
+    if let Err(e) = run() {
+        // Scrub any registered secret from the error chain before it is printed,
+        // so a leaked password can never reach stderr (PRD §6.2 E1.3).
+        eprintln!("Error: {}", secrets::redact(&format!("{e:#}")));
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
+    let globals = &cli.globals;
 
     match cli.command {
         Commands::Init => {
             init::init()?;
+        },
+        Commands::Config { action } => match action {
+            ConfigAction::Lint => {
+                if utils::lint()? {
+                    std::process::exit(1);
+                }
+            }
         },
         Commands::Db { create, drop, list, table_name } => {
             if !create && !drop && !list {
                 eprintln!("No flag provided. Use --help for options.");
                 return Ok(());
             }
-            database::database(create, drop, list, table_name)?;
+            let config = utils::load_config(globals)?;
+            database::database(create, drop, list, table_name, &config)?;
         },
         Commands::Document { path, table_name } => {
-            document::document(&path, &table_name)?;
+            let config = utils::load_config(globals)?;
+            document::document(&path, &table_name, &config)?;
         },
         Commands::Generate { query, table_name, top_k } => {
-            generate::generate(query.as_deref(), &table_name, top_k)?;
+            let config = utils::load_config(globals)?;
+            generate::generate(query.as_deref(), &table_name, top_k, &config)?;
         }
     }
     Ok(())

@@ -5,10 +5,10 @@ use anyhow::{bail, Context, Result};
 
 use crate::database::{self, RetrievedChunk};
 use crate::embed;
-use crate::utils;
+use crate::net::HttpClient;
+use crate::secrets;
+use crate::utils::{Config, Endpoint};
 
-const OPENAI_MODEL: &str = "gpt-4o-mini";
-const ANTHROPIC_MODEL: &str = "claude-sonnet-4-6";
 const ANTHROPIC_MAX_TOKENS: u32 = 4096;
 
 struct Message {
@@ -16,10 +16,12 @@ struct Message {
     content: String,
 }
 
-pub fn generate(query_arg: Option<&str>, table_name: &str, top_k: usize) -> Result<()> {
-    let config = utils::read_config()
-        .context("failed to read config; run `beskar init` first")?;
-
+pub fn generate(
+    query_arg: Option<&str>,
+    table_name: &str,
+    top_k: usize,
+    config: &Config,
+) -> Result<()> {
     let query = match query_arg {
         Some(q) => q.to_string(),
         None => {
@@ -36,8 +38,26 @@ pub fn generate(query_arg: Option<&str>, table_name: &str, top_k: usize) -> Resu
         return Ok(());
     }
 
-    let query_embedding = embed::embed_one(&config.pat, &query)?;
-    let chunks = database::query_chunks(&config, table_name, &query_embedding, top_k)?;
+    let query_embedding = embed::embed_one(config, &query)?;
+
+    let mut client = database::connect(config)?;
+    database::ensure_meta_table(&mut client, table_name)?;
+
+    // Embedding model/dimension guard (E1.5): refuse to query a corpus that was
+    // built with a different model or vector dimension than the current config.
+    if let Some((model, dim)) = database::read_corpus_meta(&mut client, table_name)? {
+        let query_dim = query_embedding.len() as i32;
+        if model != config.embed.model || dim != query_dim {
+            bail!(
+                "embedding mismatch for corpus '{table_name}': it was built with model '{model}' \
+                 (dim {dim}), but the current config uses model '{}' (dim {query_dim}). \
+                 Re-create the corpus and re-ingest, or restore the original embedding config.",
+                config.embed.model
+            );
+        }
+    }
+
+    let chunks = database::query_chunks(&mut client, table_name, &query_embedding, top_k)?;
 
     if chunks.is_empty() {
         eprintln!("No chunks found in '{}_chunks'. Has the corpus been ingested?", table_name);
@@ -46,69 +66,82 @@ pub fn generate(query_arg: Option<&str>, table_name: &str, top_k: usize) -> Resu
 
     let messages = build_messages(&query, &chunks);
 
-    let provider = config.provider.as_deref().unwrap_or("openai");
-    match provider {
-        "openai" => stream_openai(&config.pat, &messages)?,
+    let endpoint = &config.generate;
+    match endpoint.provider.as_str() {
+        "openai" | "openai-compatible" => stream_openai(endpoint, &config.http, &messages)?,
+        "azure-openai" => stream_azure_openai(endpoint, &config.http, &messages)?,
         "anthropic" => {
-            let key = config
-                .anthropic_key
-                .as_deref()
-                .context("provider=anthropic but no anthropic_key in config; re-run `beskar init`")?;
-            stream_anthropic(key, &messages)?;
+            if endpoint.api_key.is_empty() {
+                bail!("provider=anthropic but no key; set `anthropic_key` or `generate.api_key`");
+            }
+            stream_anthropic(endpoint, &config.http, &messages)?;
         }
-        other => bail!("Unknown provider '{}'. Expected 'openai' or 'anthropic'.", other),
+        "bedrock" => bail!(
+            "bedrock generation is not yet implemented; use provider \
+             'openai', 'openai-compatible', 'azure-openai', or 'anthropic'"
+        ),
+        other => bail!("Unknown provider '{other}'."),
     }
 
     print_citations(&chunks);
     Ok(())
 }
 
-fn build_messages(query: &str, chunks: &[RetrievedChunk]) -> Vec<Message> {
-    let mut context = String::new();
-    for c in chunks {
-        context.push_str(&format!(
-            "[{}:{}]\n{}\n\n",
-            c.filename, c.chunk_index, c.content
-        ));
-    }
-
-    let system = "You are a helpful assistant. Answer using only the provided context. \
-                  Cite sources inline as [filename:chunk_index]. If the answer is not in the \
-                  context, say so plainly."
-        .to_string();
-
-    let user = format!("Context:\n{}\nQuestion: {}", context, query);
-
-    vec![
-        Message { role: "system".to_string(), content: system },
-        Message { role: "user".to_string(), content: user },
-    ]
-}
-
-fn stream_openai(api_key: &str, messages: &[Message]) -> Result<()> {
-    let openai_messages: Vec<_> = messages
+fn openai_messages(messages: &[Message]) -> Vec<serde_json::Value> {
+    messages
         .iter()
         .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
-        .collect();
+        .collect()
+}
 
+fn stream_openai(endpoint: &Endpoint, http: &HttpClient, messages: &[Message]) -> Result<()> {
+    let url = format!("{}/chat/completions", endpoint.base_url);
     let body = serde_json::json!({
-        "model": OPENAI_MODEL,
-        "messages": openai_messages,
+        "model": endpoint.model,
+        "messages": openai_messages(messages),
         "stream": true,
     });
-
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post("https://api.openai.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
+    let resp = http
+        .post(&url)?
+        .bearer_auth(&endpoint.api_key)
         .json(&body)
         .send()
-        .context("failed to call OpenAI chat API")?;
+        .with_context(|| format!("failed to call chat API at {url}"))?;
+    read_openai_stream(resp)
+}
 
+fn stream_azure_openai(endpoint: &Endpoint, http: &HttpClient, messages: &[Message]) -> Result<()> {
+    let deployment = endpoint
+        .deployment
+        .as_deref()
+        .context("azure-openai generate endpoint requires `generate.deployment` in config")?;
+    let api_version = endpoint
+        .api_version
+        .as_deref()
+        .context("azure-openai generate endpoint requires `generate.api_version` in config")?;
+    let url = format!(
+        "{}/openai/deployments/{deployment}/chat/completions?api-version={api_version}",
+        endpoint.base_url
+    );
+    let body = serde_json::json!({
+        "messages": openai_messages(messages),
+        "stream": true,
+    });
+    let resp = http
+        .post(&url)?
+        .header("api-key", &endpoint.api_key)
+        .json(&body)
+        .send()
+        .with_context(|| format!("failed to call Azure OpenAI chat API at {url}"))?;
+    read_openai_stream(resp)
+}
+
+/// Parse an OpenAI-style server-sent-event stream of `chat/completions` deltas.
+fn read_openai_stream(resp: reqwest::blocking::Response) -> Result<()> {
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().unwrap_or_default();
-        bail!("OpenAI chat API returned {}: {}", status, text);
+        bail!("chat API returned {}: {}", status, secrets::redact(&text));
     }
 
     let reader = BufReader::new(resp);
@@ -139,7 +172,7 @@ fn stream_openai(api_key: &str, messages: &[Message]) -> Result<()> {
     Ok(())
 }
 
-fn stream_anthropic(api_key: &str, messages: &[Message]) -> Result<()> {
+fn stream_anthropic(endpoint: &Endpoint, http: &HttpClient, messages: &[Message]) -> Result<()> {
     let system = messages
         .iter()
         .find(|m| m.role == "system")
@@ -153,27 +186,27 @@ fn stream_anthropic(api_key: &str, messages: &[Message]) -> Result<()> {
         .collect();
 
     let body = serde_json::json!({
-        "model": ANTHROPIC_MODEL,
+        "model": endpoint.model,
         "max_tokens": ANTHROPIC_MAX_TOKENS,
         "system": system,
         "messages": user_messages,
         "stream": true,
     });
 
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key)
+    let url = format!("{}/messages", endpoint.base_url);
+    let resp = http
+        .post(&url)?
+        .header("x-api-key", &endpoint.api_key)
         .header("anthropic-version", "2023-06-01")
         .header("content-type", "application/json")
         .json(&body)
         .send()
-        .context("failed to call Anthropic messages API")?;
+        .with_context(|| format!("failed to call Anthropic messages API at {url}"))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().unwrap_or_default();
-        bail!("Anthropic messages API returned {}: {}", status, text);
+        bail!("Anthropic messages API returned {}: {}", status, secrets::redact(&text));
     }
 
     let reader = BufReader::new(resp);
@@ -201,6 +234,28 @@ fn stream_anthropic(api_key: &str, messages: &[Message]) -> Result<()> {
     }
     writeln!(out).ok();
     Ok(())
+}
+
+fn build_messages(query: &str, chunks: &[RetrievedChunk]) -> Vec<Message> {
+    let mut context = String::new();
+    for c in chunks {
+        context.push_str(&format!(
+            "[{}:{}]\n{}\n\n",
+            c.filename, c.chunk_index, c.content
+        ));
+    }
+
+    let system = "You are a helpful assistant. Answer using only the provided context. \
+                  Cite sources inline as [filename:chunk_index]. If the answer is not in the \
+                  context, say so plainly."
+        .to_string();
+
+    let user = format!("Context:\n{}\nQuestion: {}", context, query);
+
+    vec![
+        Message { role: "system".to_string(), content: system },
+        Message { role: "user".to_string(), content: user },
+    ]
 }
 
 fn print_citations(chunks: &[RetrievedChunk]) {

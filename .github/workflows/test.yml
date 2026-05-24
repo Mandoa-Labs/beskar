@@ -53,6 +53,46 @@ jobs:
           ./target/debug/beskar db --help
           ./target/debug/beskar document --help
           ./target/debug/beskar generate --help
+          ./target/debug/beskar config --help
+          ./target/debug/beskar config lint --help
 
       - name: Smoke-test no-flag db path
         run: ./target/debug/beskar db
+
+      - name: Verify secrets are redacted from --verbose output (E1.3)
+        run: |
+          mkdir -p "$HOME/.config/beskar"
+          cat > "$HOME/.config/beskar/config.yaml" <<'EOF'
+          pat: SENTINELPATVALUE0001
+          pghost: localhost
+          pguser: u
+          pgport: "5432"
+          pgdatabase: d
+          pgpassword: SENTINELPGPASSWORD0002
+          EOF
+          chmod 600 "$HOME/.config/beskar/config.yaml"
+          # --offline + --verbose prints the effective (redacted) config, then
+          # fails closed before any network egress. We only care about stderr.
+          ./target/debug/beskar generate --query hi --table-name t --offline --verbose \
+            > /dev/null 2> verbose.txt || true
+          echo "--- captured stderr ---"; cat verbose.txt
+          if grep -qE 'SENTINELPATVALUE0001|SENTINELPGPASSWORD0002' verbose.txt; then
+            echo "::error::a plaintext secret leaked into --verbose/error output"; exit 1
+          fi
+          grep -q 'REDACTED' verbose.txt || { echo "::error::expected redaction marker not found"; exit 1; }
+
+      - name: Verify config lint exits non-zero on plaintext secrets + lax mode (E1.2)
+        run: |
+          mkdir -p "$HOME/.config/beskar"
+          cat > "$HOME/.config/beskar/config.yaml" <<'EOF'
+          pat: PLAINTEXTPAT0001
+          pghost: localhost
+          pguser: u
+          pgport: "5432"
+          pgdatabase: d
+          pgpassword: PLAINTEXTPG0002
+          EOF
+          chmod 644 "$HOME/.config/beskar/config.yaml"  # deliberately lax
+          if ./target/debug/beskar config lint; then
+            echo "::error::config lint should exit non-zero on plaintext secrets / lax mode"; exit 1
+          fi
