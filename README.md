@@ -17,6 +17,7 @@ Beskar is a Rust CLI for building and querying a local RAG (Retrieval-Augmented 
 - [Quickstart](#quickstart)
 - [Commands](#commands)
 - [Enterprise hardening](#enterprise-hardening)
+- [Supply-chain security](#supply-chain-security)
 - [Optional document formats](#optional-document-formats)
 - [Build & test](#build--test)
 - [Project structure](#project-structure)
@@ -245,6 +246,35 @@ pgsslkey:  /etc/ssl/client.key
 `verify-ca` checks the chain against the pinned root CA; `verify-full` also
 verifies the server hostname. `require` (the default) encrypts without
 verification.
+
+## Supply-chain security
+
+Every release is signed, checksummed, attested, and shipped with an SBOM, so you
+can verify exactly what you run and where it came from:
+
+- **Signatures** — each artifact has a Sigstore *keyless* signature
+  (`<asset>.cosign.bundle`); there is no long-lived signing key.
+- **Checksums** — `SHA256SUMS` covers every published asset (and is itself signed).
+- **SBOM** — `beskar.cdx.json`, a CycloneDX bill of materials of all crate
+  dependencies, generated from `Cargo.lock`.
+- **Provenance** — a [SLSA](https://slsa.dev/) build-provenance attestation per
+  artifact, verifiable with `gh attestation verify`.
+
+```bash
+# checksum + signature + provenance for one artifact
+sha256sum -c SHA256SUMS
+cosign verify-blob --bundle beskar-debian-amd64.deb.cosign.bundle \
+  --certificate-identity-regexp '^https://github.com/Mandoa-Labs/beskar/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  beskar-debian-amd64.deb
+gh attestation verify beskar-debian-amd64.deb --repo Mandoa-Labs/beskar
+```
+
+Full instructions, including bulk verification and SBOM scanning, are in
+[`docs/release-verification.md`](docs/release-verification.md). Build
+reproducibility is documented in [`docs/reproducible-builds.md`](docs/reproducible-builds.md).
+The vulnerability/license CI gates and disclosure policy live in
+[`SECURITY.md`](SECURITY.md).
 
 ## Optional document formats
 

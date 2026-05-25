@@ -185,11 +185,80 @@ jobs:
       - macos-build-packages
       - windows-build-packages
 
+    # Job-level permissions (override the workflow default for this job):
+    #   contents     — create the release and upload assets
+    #   id-token     — OIDC token for Sigstore keyless signing + provenance (#54, #56)
+    #   attestations — write SLSA build-provenance attestations (#56)
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
     steps:
+      - name: Checkout source
+        # Needed so the SBOM step can read Cargo.lock (#55).
+        uses: actions/checkout@v6
+
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
           path: artifacts
+
+      - name: Collect release assets
+        # Flatten the per-arch build artifacts into a single dist/ directory so
+        # signing, checksums, and the release upload all act on one location.
+        run: |
+          mkdir -p dist
+          find artifacts -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.tar.gz' -o -name '*.zip' \) \
+            -exec cp -v {} dist/ \;
+          echo "Release assets:"
+          ls -l dist
+
+      - name: Generate SBOM (CycloneDX)
+        # #55 — syft reads Cargo.lock and lists every crate dependency.
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/beskar.cdx.json
+          artifact-name: beskar.cdx.json
+
+      - name: Generate SLSA build provenance
+        # #56 — verifiable later with:
+        #   gh attestation verify <file> --repo ${{ github.repository }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+            dist/*.zip
+
+      - name: Generate SHA-256 checksums
+        # #54 — one manifest over every published asset (incl. the SBOM).
+        working-directory: dist
+        run: |
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign assets (Sigstore keyless)
+        # #54 — emit a verifiable signature bundle per asset, including the
+        # checksum manifest. The glob is expanded once, so the freshly written
+        # *.cosign.bundle files are not themselves signed.
+        working-directory: dist
+        env:
+          COSIGN_YES: "true"
+        run: |
+          for f in *; do
+            [ -f "$f" ] || continue
+            echo "Signing $f"
+            cosign sign-blob --yes --bundle "${f}.cosign.bundle" "$f"
+          done
+          ls -l
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -197,9 +266,37 @@ jobs:
           tag_name: release-${{ github.run_number }}
           name: Release ${{ github.run_number }}
           files: |
-            artifacts/**/*.deb
-            artifacts/**/*.rpm
-            artifacts/**/*.tar.gz
-            artifacts/**/*.zip
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.cosign.bundle
+            dist/beskar.cdx.json
+            dist/SHA256SUMS
+          body: |
+            ## Supply-chain verification
+
+            Every artifact is signed (Sigstore keyless), checksummed, and carries
+            SLSA build provenance. An SBOM (`beskar.cdx.json`, CycloneDX) lists all
+            crate dependencies. See [`docs/release-verification.md`](https://github.com/${{ github.repository }}/blob/main/docs/release-verification.md).
+
+            **Checksums**
+            ```
+            sha256sum -c SHA256SUMS
+            ```
+
+            **Signature** (example: the amd64 `.deb`)
+            ```
+            cosign verify-blob \
+              --bundle beskar-debian-amd64.deb.cosign.bundle \
+              --certificate-identity-regexp '^https://github.com/${{ github.repository }}/' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              beskar-debian-amd64.deb
+            ```
+
+            **Provenance**
+            ```
+            gh attestation verify beskar-debian-amd64.deb --repo ${{ github.repository }}
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
