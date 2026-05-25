@@ -1,0 +1,57 @@
+# cargo-deny configuration — supply-chain license & dependency gates.
+# PRD §12.4–12.5 (issue #57). Run locally with:
+#
+#     cargo install cargo-deny
+#     cargo deny check
+#
+# CI splits the gate in two (.github/workflows/test.yml):
+#   * vulnerability gate  -> cargo audit (RustSec advisories)
+#   * license/source gate -> cargo deny check bans licenses sources
+
+[graph]
+# Resolve dependencies for the host platform. Optional-feature crates (docx,
+# pdf) still appear in the graph and are covered by the license policy below.
+all-features = false
+
+[advisories]
+# Kept for local `cargo deny check`; in CI the vulnerability gate is cargo-audit.
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Permissive licenses we accept. Beskar itself is MIT. Anything a dependency
+# carries that is not listed here fails the build, forcing a deliberate review.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "0BSD",
+    "Unlicense",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "BSL-1.0",
+    # OpenSSL: the `openssl-sys` crate links OpenSSL (vendored on Windows/macOS).
+    # The combined license is recorded here for GRC review; the crate metadata
+    # itself is Apache-2.0/MIT.
+    "OpenSSL",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Duplicate versions are common in healthy transitive trees; warn rather than
+# fail so this gate stays focused on licenses and disallowed sources.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+# Only crates.io is trusted; an unknown registry or a git dependency fails.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

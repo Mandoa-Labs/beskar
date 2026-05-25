@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Mandoa-Labs/beskar/docs/audit-log.schema.json",
+  "title": "Beskar audit event",
+  "description": "One JSON audit event emitted per security-relevant action (PRD E1.8). Schema version 1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "timestamp", "actor", "host", "pid", "command", "outcome"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC RFC 3339 with millisecond precision, e.g. 2026-05-25T14:03:11.482Z"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "host": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "command": {
+      "type": "string",
+      "enum": ["init", "config-lint", "db", "document", "generate"]
+    },
+    "target": {
+      "type": "string",
+      "description": "Corpus / --table-name; omitted when not applicable."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["success", "failure"]
+    },
+    "error": {
+      "type": "string",
+      "description": "Redacted error message; present only when outcome is failure."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "success" } } },
+      "then": { "not": { "required": ["error"] } }
+    }
+  ]
+}

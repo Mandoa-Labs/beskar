@@ -1,0 +1,18 @@
+# Pinned toolchain for reproducible builds (PRD §12.6, issue #58).
+#
+# rustup honors this file for every `cargo`/`rustc` invocation in this repo,
+# in CI and on developer machines alike, so a given commit always builds with
+# the same compiler. Bump deliberately; see docs/reproducible-builds.md.
+[toolchain]
+channel = "1.93.0"
+components = ["rustfmt", "clippy"]
+# Every release target, so the pinned toolchain can cross-compile the packages
+# produced by .github/workflows/release.yml.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+profile = "minimal"
