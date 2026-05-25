@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+mod audit;
 mod init;
 mod document;
 mod generate;
@@ -23,7 +24,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Init,
+    /// Write config.yaml. Prompts interactively, or runs unattended when every
+    /// value is supplied via flags/env (PRD §6.2 E1.10).
+    Init(init::InitArgs),
     /// Inspect configuration.
     Config {
         #[command(subcommand)]
@@ -79,14 +82,21 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let globals = &cli.globals;
+    // Audit sink is resolved from the environment so it is available even for
+    // `init`, which runs before any config file exists (PRD §6.2 E1.8).
+    let audit = audit::Logger::from_env();
 
     match cli.command {
-        Commands::Init => {
-            init::init()?;
+        Commands::Init(args) => {
+            let result = init::init(&args);
+            audit.record_result("init", None, &result);
+            result?;
         },
         Commands::Config { action } => match action {
             ConfigAction::Lint => {
-                if utils::lint()? {
+                let result = utils::lint();
+                audit.record_result("config-lint", None, &result);
+                if result? {
                     std::process::exit(1);
                 }
             }
@@ -96,16 +106,28 @@ fn run() -> Result<()> {
                 eprintln!("No flag provided. Use --help for options.");
                 return Ok(());
             }
-            let config = utils::load_config(globals)?;
-            database::database(create, drop, list, table_name, &config)?;
+            let result = (|| {
+                let config = utils::load_config(globals)?;
+                database::database(create, drop, list, table_name.clone(), &config)
+            })();
+            audit.record_result("db", table_name.as_deref(), &result);
+            result?;
         },
         Commands::Document { path, table_name } => {
-            let config = utils::load_config(globals)?;
-            document::document(&path, &table_name, &config)?;
+            let result = (|| {
+                let config = utils::load_config(globals)?;
+                document::document(&path, &table_name, &config)
+            })();
+            audit.record_result("document", Some(table_name.as_str()), &result);
+            result?;
         },
         Commands::Generate { query, table_name, top_k } => {
-            let config = utils::load_config(globals)?;
-            generate::generate(query.as_deref(), &table_name, top_k, &config)?;
+            let result = (|| {
+                let config = utils::load_config(globals)?;
+                generate::generate(query.as_deref(), &table_name, top_k, &config)
+            })();
+            audit.record_result("generate", Some(table_name.as_str()), &result);
+            result?;
         }
     }
     Ok(())

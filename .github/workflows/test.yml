@@ -15,8 +15,14 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust toolchain (rust-toolchain.toml)
+        # No explicit version here: rustup honors rust-toolchain.toml and
+        # auto-installs the pinned channel on first cargo/rustc invocation, so
+        # CI builds with the same compiler as releases (PRD §12.6, issue #58).
+        run: |
+          rustup show
+          cargo --version
+          rustc --version
 
       - name: Cache cargo registry + build
         uses: actions/cache@v5
@@ -34,17 +40,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
 
+      # --locked fails closed if Cargo.lock and Cargo.toml disagree, which is
+      # what makes the committed lockfile a reproducibility guarantee (#58).
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --locked --verbose
 
       - name: Run unit tests
-        run: cargo test --verbose
+        run: cargo test --locked --verbose
 
       - name: Build with optional format features (docx, pdf)
-        run: cargo build --features docx,pdf --verbose
+        run: cargo build --locked --features docx,pdf --verbose
 
       - name: Run unit tests with optional format features (docx, pdf)
-        run: cargo test --features docx,pdf --verbose
+        run: cargo test --locked --features docx,pdf --verbose
 
       - name: Smoke-test CLI parsing (--help on every subcommand)
         run: |
@@ -96,3 +104,87 @@ jobs:
           if ./target/debug/beskar config lint; then
             echo "::error::config lint should exit non-zero on plaintext secrets / lax mode"; exit 1
           fi
+
+      - name: Verify audit log emits one redacted, schema-valid event (E1.8)
+        run: |
+          mkdir -p "$HOME/.config/beskar"
+          cat > "$HOME/.config/beskar/config.yaml" <<'EOF'
+          pat: SENTINELAUDITSECRET0001
+          pghost: localhost
+          pguser: u
+          pgport: "5432"
+          pgdatabase: d
+          pgpassword: SENTINELAUDITPW0002
+          EOF
+          chmod 600 "$HOME/.config/beskar/config.yaml"
+          export BESKAR_AUDIT_FILE="$PWD/audit.log"
+          rm -f "$PWD/audit.log"
+          # An --offline generate fails closed before any egress, producing
+          # exactly one 'generate' failure event in the audit log.
+          ./target/debug/beskar generate --query hi --table-name notes --offline \
+            > /dev/null 2>&1 || true
+          echo "--- audit.log ---"; cat audit.log
+          if [ "$(grep -c . audit.log)" -ne 1 ]; then
+            echo "::error::expected exactly one audit event"; exit 1
+          fi
+          if grep -qE 'SENTINELAUDITSECRET0001|SENTINELAUDITPW0002' audit.log; then
+            echo "::error::a plaintext secret leaked into the audit log"; exit 1
+          fi
+          # Validate the emitted event(s) against the published JSON Schema, in
+          # an isolated venv so the check works regardless of the runner's
+          # externally-managed system Python (PEP 668).
+          python3 -m venv /tmp/schema-venv
+          /tmp/schema-venv/bin/pip install --quiet jsonschema
+          /tmp/schema-venv/bin/python - <<'PY'
+          import json, sys
+          from jsonschema import Draft202012Validator
+
+          schema = json.load(open("docs/audit-log.schema.json"))
+          validator = Draft202012Validator(schema)
+          count = 0
+          with open("audit.log") as fh:
+              for line in fh:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  count += 1
+                  event = json.loads(line)
+                  errors = sorted(validator.iter_errors(event), key=lambda e: list(e.path))
+                  if errors:
+                      for err in errors:
+                          print(f"::error::audit event violates schema: {err.message}")
+                      sys.exit(1)
+          if count != 1:
+              print(f"::error::expected exactly one audit event, got {count}")
+              sys.exit(1)
+          print(f"validated {count} audit event(s) against docs/audit-log.schema.json")
+          PY
+
+  supply-chain:
+    name: Supply chain (vuln + license gates)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      # License + source policy is enforced by cargo-deny against deny.toml.
+      # Advisories are intentionally delegated to cargo-audit below (see the
+      # note in deny.toml), so this gate covers bans, licenses, and sources.
+      - name: License & source gate (cargo-deny)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+
+      # Vulnerability gate: scan the committed Cargo.lock against the RustSec
+      # advisory database. Built from source for determinism, matching how the
+      # release workflow installs its packaging tools.
+      - name: Vulnerability gate (cargo-audit / RustSec advisories)
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
