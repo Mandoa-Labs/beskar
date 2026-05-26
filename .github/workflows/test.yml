@@ -54,6 +54,12 @@ jobs:
       - name: Run unit tests with optional format features (docx, pdf)
         run: cargo test --locked --features docx,pdf --verbose
 
+      # Compile the FIPS runtime path (E1.9). The OpenSSL FIPS provider only has
+      # to be present at runtime, not to compile, so this catches build breakage
+      # in the `--features fips` code on the runner's OpenSSL 3.
+      - name: Build with FIPS feature (E1.9)
+        run: cargo build --locked --features fips --verbose
+
       - name: Smoke-test CLI parsing (--help on every subcommand)
         run: |
           ./target/debug/beskar --help
@@ -63,9 +69,20 @@ jobs:
           ./target/debug/beskar generate --help
           ./target/debug/beskar config --help
           ./target/debug/beskar config lint --help
+          ./target/debug/beskar version --help
 
       - name: Smoke-test no-flag db path
         run: ./target/debug/beskar db
+
+      - name: Verify `version` reports FIPS state (E1.9)
+        run: |
+          out="$(./target/debug/beskar version)"
+          echo "$out"
+          echo "$out" | grep -q '^beskar ' || { echo "::error::version line missing"; exit 1; }
+          # The default build is not a FIPS build, so it must say so rather than
+          # claim validated crypto.
+          echo "$out" | grep -q 'FIPS mode: unavailable' || {
+            echo "::error::expected FIPS-unavailable status on a standard build"; exit 1; }
 
       - name: Verify secrets are redacted from --verbose output (E1.3)
         run: |
