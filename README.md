@@ -121,6 +121,25 @@ Prompts for and writes config to `~/.config/beskar/config.yaml` (mode `0600` on 
 - `anthropic_key` — required only when `provider=anthropic`
 - Postgres connection fields (`pghost`, `pguser`, `pgport`, `pgdatabase`, `pgpassword`)
 
+**Non-interactive / unattended.** Every prompt also has a flag and an env var,
+resolved as **flag → env → prompt** (PRD §6.2 E1.10):
+
+| Field | Flag | Env |
+| --- | --- | --- |
+| OpenAI key | `--pat` | `BESKAR_PAT`, `OPENAI_API_KEY` |
+| Provider | `--provider` | `BESKAR_PROVIDER` |
+| Anthropic key | `--anthropic-key` | `BESKAR_ANTHROPIC_KEY`, `ANTHROPIC_API_KEY` |
+| Postgres | `--pghost` … `--pgpassword` | `PGHOST`, `PGUSER`, `PGPORT`, `PGDATABASE`, `PGPASSWORD` |
+
+Pass `--non-interactive` to never prompt: a missing required value becomes a
+hard error naming the env vars that would satisfy it — ideal for CI and golden
+images.
+
+```bash
+BESKAR_PAT=sk-... PGHOST=db.internal PGUSER=beskar PGPASSWORD=… \
+  beskar init --non-interactive
+```
+
 ### `beskar db`
 
 Manage corpus tables. Requires `--table-name` for create/drop.
@@ -166,7 +185,7 @@ problem — handy as a CI/pre-flight gate:
 
 ## Enterprise hardening
 
-These controls (PRD §6.2 E1.1–E1.7) make beskar safe to run in regulated and
+These controls (PRD §6.2 E1.1–E1.10) make beskar safe to run in regulated and
 air-gapped environments. All are opt-in: a config written before this milestone
 keeps working unchanged.
 
@@ -246,6 +265,29 @@ pgsslkey:  /etc/ssl/client.key
 `verify-ca` checks the chain against the pinned root CA; `verify-full` also
 verifies the server hostname. `require` (the default) encrypts without
 verification.
+
+### Audit log
+
+Beskar can emit a structured JSON **audit event** for every security-relevant
+action (`init`, `config-lint`, `db`, `document`, `generate`) — one object per
+line, stable schema, designed for SIEM ingestion. It is **off by default** and
+configured from the environment (so it covers `beskar init`, which runs before
+any config exists):
+
+```bash
+# Append one JSON event per action to a file:
+BESKAR_AUDIT_FILE=/var/log/beskar/audit.log beskar document --path ./docs --table-name kb
+
+# Or stream to stderr / the local syslog daemon:
+BESKAR_AUDIT_SINK=stderr beskar generate --query "..." --table-name kb
+BESKAR_AUDIT_SINK=syslog beskar db --create --table-name kb
+```
+
+`BESKAR_AUDIT_SINK` is `off` (default), `stderr`, `file`, or `syslog`. A failed
+action records a `failure` outcome with an `error` message that is first run
+through the secret-redaction registry, so **no credential can leak into the
+log** (verified in CI). Sink-write failures degrade to a warning and never fail
+the command. Full schema and JSON Schema: [`docs/audit-log.md`](docs/audit-log.md).
 
 ## Supply-chain security
 
