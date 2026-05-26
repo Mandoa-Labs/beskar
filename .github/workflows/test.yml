@@ -192,6 +192,20 @@ jobs:
           echo "$out" | grep -q 'table-name is required' || {
             echo "::error::expected a clear --table-name-required message"; exit 1; }
 
+      - name: Verify compliance appendix covers every E1 control (§11)
+        run: |
+          # Docs-only check: the SOC 2 / 800-53 control-mapping appendix must map
+          # every E1 control, so it can't silently drift as controls change.
+          doc=docs/control-mapping.md
+          test -f "$doc" || { echo "::error::$doc is missing"; exit 1; }
+          for n in $(seq 1 12); do
+            grep -qF "**E1.$n**" "$doc" || {
+              echo "::error::control-mapping appendix is missing E1.$n"; exit 1; }
+          done
+          grep -qF 'SOC 2' "$doc" && grep -qF '800-53' "$doc" || {
+            echo "::error::appendix must reference both SOC 2 and NIST 800-53"; exit 1; }
+          echo "control-mapping appendix covers E1.1-E1.12"
+
       - name: Verify audit log emits one redacted, schema-valid event (E1.8)
         run: |
           mkdir -p "$HOME/.config/beskar"

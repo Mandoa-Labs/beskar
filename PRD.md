@@ -317,7 +317,7 @@ Beskar is customer-operated software, not a hosted service; it therefore provide
 | Supply-chain (SLSA) | Provenance attestation + signed artifacts + SBOM (§12). |
 | Audit | SIEM-ready audit events (E1.8) mapped to AU-family controls. |
 
-A control-mapping appendix (NIST 800-53 / SOC 2 CC) will be maintained alongside this PRD once E1 lands, to answer SIG/CAIQ vendor questionnaires directly.
+A control-mapping appendix (NIST 800-53 / SOC 2 CC) is maintained alongside this PRD to answer SIG/CAIQ vendor questionnaires directly: **[`docs/control-mapping.md`](docs/control-mapping.md)** maps each E1 control (E1.1–E1.12) and supply-chain control (§12) to its SOC 2 trust criterion and 800-53 control family, with implementation/evidence pointers.
 
 ## 12. Supply-Chain Security
 

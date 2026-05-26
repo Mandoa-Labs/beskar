@@ -18,6 +18,7 @@ Beskar is a Rust CLI for building and querying a local RAG (Retrieval-Augmented 
 - [Commands](#commands)
 - [Enterprise hardening](#enterprise-hardening)
 - [Supply-chain security](#supply-chain-security)
+- [Compliance](#compliance)
 - [Optional document formats](#optional-document-formats)
 - [Build & test](#build--test)
 - [Project structure](#project-structure)
@@ -405,6 +406,14 @@ Full instructions, including bulk verification and SBOM scanning, are in
 reproducibility is documented in [`docs/reproducible-builds.md`](docs/reproducible-builds.md).
 The vulnerability/license CI gates and disclosure policy live in
 [`SECURITY.md`](SECURITY.md).
+
+## Compliance
+
+Beskar is customer-operated software, so it provides **controls and evidence**
+you fold into your own SOC 2 / FedRAMP program rather than a certification.
+[`docs/control-mapping.md`](docs/control-mapping.md) maps every enterprise
+control to its SOC 2 trust criterion and NIST 800-53 control family — built to
+answer SIG / CAIQ vendor-security questionnaires directly.
 
 ## Optional document formats
 
