@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
 use anyhow::{bail, Context, Result};
-use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 use crate::utils::Config;
 use crate::database;
@@ -186,10 +185,10 @@ fn read_pdf(file_path: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
+// Hash via the shared OpenSSL-backed helper so a FIPS build uses the validated
+// SHA-256 (PRD §6.2 E1.9) rather than a separate pure-Rust implementation.
 fn sha256_hex(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    hex::encode(hasher.finalize())
+    crate::fips::sha256_hex(content.as_bytes())
 }
 
 fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {

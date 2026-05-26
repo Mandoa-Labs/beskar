@@ -1,8 +1,9 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 mod audit;
 mod init;
 mod document;
+mod fips;
 mod generate;
 mod database;
 mod embed;
@@ -61,7 +62,9 @@ enum Commands {
 
         #[arg(long, default_value_t = 5)]
         top_k: usize,
-    }
+    },
+    /// Print the version and whether FIPS-validated crypto is active (PRD §6.2 E1.9).
+    Version,
 }
 
 #[derive(Subcommand)]
@@ -81,12 +84,27 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+
+    // `version` reports the FIPS state (among other things) and must work on any
+    // build, even one whose FIPS module fails to load, so handle it first.
+    if matches!(cli.command, Commands::Version) {
+        println!("beskar {}", env!("CARGO_PKG_VERSION"));
+        println!("{}", fips::status_line());
+        return Ok(());
+    }
+
+    // Every other command performs validated crypto (TLS and/or hashing). On a
+    // FIPS build, refuse to run if the validated module can't be activated —
+    // fail closed rather than silently use non-validated crypto (PRD §6.2 E1.9).
+    fips::activate().context("FIPS mode could not be enabled")?;
+
     let globals = &cli.globals;
     // Audit sink is resolved from the environment so it is available even for
     // `init`, which runs before any config file exists (PRD §6.2 E1.8).
     let audit = audit::Logger::from_env();
 
     match cli.command {
+        Commands::Version => unreachable!("handled before FIPS activation"),
         Commands::Init(args) => {
             let result = init::init(&args);
             audit.record_result("init", None, &result);

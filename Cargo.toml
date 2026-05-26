@@ -17,7 +17,6 @@ postgres-openssl = "0.5"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde_json = "1.0.149"
 anyhow = "1"
-sha2 = "0.10"
 hex = "0.4"
 
 # Optional document-format extractors, enabled via the `docx` / `pdf` features.
@@ -30,6 +29,13 @@ pdf-extract = { version = "0.10", optional = true }
 # Enable with e.g. `cargo build --features docx,pdf`.
 docx = ["dep:zip", "dep:quick-xml"]
 pdf = ["dep:pdf-extract"]
+
+# FIPS 140-3 runtime mode (PRD §6.2 E1.9). Loads the OpenSSL 3 FIPS provider at
+# startup and fails closed if it is unavailable; `beskar version` reports the
+# state. Requires linking against an OpenSSL 3 build whose FIPS provider is
+# installed and configured on the host — see docs/fips.md. No extra crates: the
+# feature only changes runtime behavior, gated on `cfg(feature = "fips")`.
+fips = []
 
 # Build openssl from source on platforms where a system openssl is not
 # reliably available (Windows, macOS). Linux still links dynamically so

@@ -183,6 +183,16 @@ problem — handy as a CI/pre-flight gate:
   stored as a plaintext literal rather than a [secret reference](#secret-backends),
 - flags lax file permissions (anything looser than `0600` on unix).
 
+### `beskar version`
+
+Prints the version and whether [FIPS-validated crypto](#fips-mode) is active:
+
+```bash
+$ beskar version
+beskar 0.1.0
+FIPS mode: unavailable (standard build; rebuild with --features fips)
+```
+
 ## Enterprise hardening
 
 These controls (PRD §6.2 E1.1–E1.10) make beskar safe to run in regulated and
@@ -265,6 +275,22 @@ pgsslkey:  /etc/ssl/client.key
 `verify-ca` checks the chain against the pinned root CA; `verify-full` also
 verifies the server hostname. `require` (the default) encrypts without
 verification.
+
+### FIPS mode
+
+For FedRAMP / public-sector workloads, beskar can run with **all TLS and hashing
+under a FIPS 140-3 validated module** (PRD §6.2 E1.9). Build with the `fips`
+feature and `beskar version` reports the result:
+
+```bash
+cargo build --release --locked --features fips
+beskar version        # → "FIPS mode: active (OpenSSL FIPS provider loaded)"
+```
+
+A FIPS build loads the OpenSSL 3 FIPS provider at startup and **fails closed**
+if it is unavailable, so it never silently falls back to non-validated crypto.
+This requires a host whose OpenSSL 3 ships and registers the FIPS provider; the
+full build/runtime and per-platform configuration is in [`docs/fips.md`](docs/fips.md).
 
 ### Audit log
 
@@ -353,6 +379,7 @@ cargo fmt             # Format code
 - `src/generate/` — `generate` command (retrieve → compose → stream)
 - `src/net/` — Outbound HTTP client + egress policy (proxy / CA bundle / allowlist / `--offline`)
 - `src/secrets/` — Pluggable secret backends (`scheme://` references) + redaction
+- `src/fips/` — FIPS 140-3 runtime mode (OpenSSL provider activation, validated SHA-256)
 - `src/utils/` — Config parsing, secret resolution, and `config lint`
 - `terraform/` — Azure PostgreSQL Flexible Server with pgvector allowlisted
 
