@@ -7,6 +7,8 @@ mod fips;
 mod generate;
 mod database;
 mod embed;
+mod identity;
+mod login;
 mod net;
 mod policy;
 mod redact;
@@ -65,12 +67,24 @@ enum Commands {
         #[arg(long)]
         query: Option<String>,
 
+        /// Direct mode: corpus table prefix in the local Postgres (needs config.yaml).
         #[arg(long)]
-        table_name: String,
+        table_name: Option<String>,
+
+        /// Client mode: logical corpus on a `beskar serve` instance. Uses the
+        /// short-lived token from `beskar login`; no DB credentials required.
+        #[arg(long)]
+        corpus: Option<String>,
+
+        /// Client mode: server base URL (overrides the one stored by `beskar login`).
+        #[arg(long)]
+        server: Option<String>,
 
         #[arg(long, default_value_t = 5)]
         top_k: usize,
     },
+    /// Authenticate to a `beskar serve` instance via SSO and store a short-lived token (PRD §6.3 E2.2).
+    Login(login::LoginArgs),
     /// Serve ingest + query over an authenticated HTTP API, reusing the CLI core (PRD §6.3 E2.1).
     Serve(serve::ServeArgs),
     /// Print the version and whether FIPS-validated crypto is active (PRD §6.2 E1.9).
@@ -149,12 +163,31 @@ fn run() -> Result<()> {
             audit.record_result("document", Some(table_name.as_str()), &result);
             result?;
         },
-        Commands::Generate { query, table_name, top_k } => {
+        Commands::Generate { query, table_name, corpus, server, top_k } => {
+            // Client mode (`--corpus`/`--server`) talks to a `beskar serve`
+            // instance with the stored session token and needs no DB creds;
+            // direct mode (`--table-name`) loads config.yaml and hits Postgres.
+            let target = corpus.clone().or_else(|| table_name.clone());
             let result = (|| {
-                let config = utils::load_config(globals)?;
-                generate::generate(query.as_deref(), &table_name, top_k, &config)
+                if corpus.is_some() || server.is_some() {
+                    let corpus = corpus
+                        .as_deref()
+                        .context("client mode requires --corpus (the logical corpus on the server)")?;
+                    login::client_generate(globals, server.as_deref(), corpus, query.as_deref(), top_k)
+                } else {
+                    let table_name = table_name
+                        .as_deref()
+                        .context("provide --table-name (direct) or --corpus + login (server)")?;
+                    let config = utils::load_config(globals)?;
+                    generate::generate(query.as_deref(), table_name, top_k, &config)
+                }
             })();
-            audit.record_result("generate", Some(table_name.as_str()), &result);
+            audit.record_result("generate", target.as_deref(), &result);
+            result?;
+        }
+        Commands::Login(args) => {
+            let result = login::login(globals, &args);
+            audit.record_result("login", Some(args.server.as_str()), &result);
             result?;
         }
         Commands::Serve(args) => {

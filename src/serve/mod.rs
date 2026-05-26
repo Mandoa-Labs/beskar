@@ -1,19 +1,27 @@
-//! `beskar serve` — authenticated HTTP API over the CLI core (PRD §6.3 E2.1).
+//! `beskar serve` — authenticated HTTP API over the CLI core (PRD §6.3).
 //!
-//! A small **blocking** HTTP server (`tiny_http`) that exposes ingest + query
-//! backed by the exact same core library the CLI uses (`document::ingest_one`,
-//! `generate::answer`): serve is a front-end, not a fork. Requests are handled
-//! sequentially, and every request except `GET /health` requires a bearer token
-//! (constant-time compared). Full identity/RBAC is deferred to M9 (#75).
+//! A small **blocking** HTTP server (`tiny_http`) that exposes ingest + query +
+//! corpus admin backed by the exact same core library the CLI uses
+//! (`document::ingest_one`, `generate::answer`, `database::create_corpus`):
+//! serve is a front-end, not a fork. Requests are handled sequentially.
+//!
+//! Every request except `GET /health` and `POST /v1/login` is authenticated to a
+//! [`Principal`] (E2.2) — the shared super-admin token, a static principal token,
+//! or a short-lived session token issued by `/v1/login`. The principal's role is
+//! then checked against the requested action (RBAC, E2.3), and the physical
+//! corpus tables are derived from the principal's tenant (tenant isolation,
+//! E2.5), so a caller can only ever touch its own tenant's data. The central
+//! provider/endpoint policy (E2.6) is enforced on top.
 
 use std::io::Read;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::audit::Logger;
+use crate::identity::{self, Action, Principal};
 use crate::utils::{Config, Endpoint};
 use crate::{database, document, generate, net, secrets};
 
@@ -25,14 +33,19 @@ pub struct ServeArgs {
     /// Address to bind, `host:port`.
     #[arg(long, default_value = "127.0.0.1:8080")]
     pub addr: String,
-    /// Bearer token required on every request (env: BESKAR_SERVE_TOKEN).
+    /// Shared super-admin bearer token (env: BESKAR_SERVE_TOKEN). Optional once
+    /// `auth.principals` / `auth.oidc` are configured.
     #[arg(long)]
     pub token: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct IngestRequest {
-    table_name: String,
+    /// Logical corpus (preferred). `table_name` is accepted as a legacy alias.
+    #[serde(default)]
+    corpus: Option<String>,
+    #[serde(default)]
+    table_name: Option<String>,
     filename: String,
     /// Stable identity used for change-detection; defaults to `filename`.
     #[serde(default)]
@@ -42,21 +55,45 @@ struct IngestRequest {
 
 #[derive(Deserialize)]
 struct QueryRequest {
-    table_name: String,
+    #[serde(default)]
+    corpus: Option<String>,
+    #[serde(default)]
+    table_name: Option<String>,
     query: String,
     #[serde(default)]
     top_k: Option<usize>,
 }
 
+#[derive(Deserialize)]
+struct CorpusRequest {
+    #[serde(default)]
+    corpus: Option<String>,
+    #[serde(default)]
+    table_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LoginRequest {
+    #[serde(default)]
+    id_token: Option<String>,
+}
+
 pub fn serve(args: &ServeArgs, config: &Config) -> Result<()> {
-    // Fail closed: a server with no token would expose ingest/query to anyone.
-    let token = args
+    let admin_token = args
         .token
         .clone()
         .or_else(|| std::env::var("BESKAR_SERVE_TOKEN").ok())
         .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .context("`beskar serve` requires an API token; pass --token or set BESKAR_SERVE_TOKEN")?;
+        .filter(|t| !t.is_empty());
+
+    // Fail closed: a server with no shared token and no configured identity
+    // source would expose the API to anyone.
+    if admin_token.is_none() && !config.auth.is_configured() {
+        anyhow::bail!(
+            "`beskar serve` requires an API token or a configured `auth` block; \
+             pass --token / set BESKAR_SERVE_TOKEN, or configure `auth.principals` / `auth.oidc`"
+        );
+    }
 
     // Central policy (E2.6): fail closed before binding if the policy requires
     // redaction but it is disabled — no caller should be served without it.
@@ -69,6 +106,7 @@ pub fn serve(args: &ServeArgs, config: &Config) -> Result<()> {
     let server = Server::http(args.addr.as_str())
         .map_err(|e| anyhow::anyhow!("failed to bind {}: {e}", args.addr))?;
     eprintln!("beskar serve listening on http://{} (Ctrl-C to stop)", args.addr);
+    eprintln!("identity: {}", config.auth.summary());
     if config.policy.is_active() {
         eprintln!("central policy active: {}", config.policy.summary());
     }
@@ -76,75 +114,249 @@ pub fn serve(args: &ServeArgs, config: &Config) -> Result<()> {
     // Requests are audited through the same E1.8 logger as the CLI.
     let audit = Logger::from_env();
     for request in server.incoming_requests() {
-        handle(request, config, &token, &audit);
+        handle(request, config, &admin_token, &audit);
     }
     Ok(())
 }
 
-fn handle(mut request: Request, config: &Config, token: &str, audit: &Logger) {
+fn handle(request: Request, config: &Config, admin_token: &Option<String>, audit: &Logger) {
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("").to_string();
 
-    // Liveness probe is unauthenticated.
-    if matches!(method, Method::Get) && path == "/health" {
-        let _ = respond(request, 200, &json!({"status": "ok"}));
-        return;
+    // Unauthenticated endpoints: liveness probe and SSO login (login carries its
+    // own credential — the IdP ID token — in the body).
+    match (&method, path.as_str()) {
+        (Method::Get, "/health") => {
+            let _ = respond(request, 200, &json!({"status": "ok"}));
+            return;
+        }
+        (Method::Post, "/v1/login") => {
+            handle_login(request, config, audit);
+            return;
+        }
+        _ => {}
     }
 
-    // Everything else requires a valid bearer token.
-    let auth = auth_header(&request);
-    if !token_matches(auth.as_deref(), token) {
-        let _ = respond(request, 401, &json!({"error": "unauthorized"}));
-        return;
-    }
+    // Everything else requires authentication to a principal.
+    let principal = match authenticate(config, admin_token, &request) {
+        Some(p) => p,
+        None => {
+            let _ = respond(request, 401, &json!({"error": "unauthorized"}));
+            return;
+        }
+    };
 
     match (&method, path.as_str()) {
+        (Method::Get, "/v1/whoami") => {
+            let _ = respond(request, 200, &principal.to_json());
+        }
         // Surface the active central policy so admins/callers can see what's
         // enforced (E2.6).
         (Method::Get, "/v1/policy") => {
             let _ = respond(request, 200, &config.policy.as_json());
         }
-        (Method::Post, "/v1/ingest") => {
-            // Central policy (E2.6): ingest uses the embedding endpoint.
-            if let Some(reason) = policy_denial(config, &[("embed", &config.embed)]) {
-                let _ = respond(request, 403, &json!({ "error": reason }));
-                return;
-            }
-            let req: IngestRequest = match read_json(&mut request) {
-                Ok(r) => r,
-                Err((code, msg)) => {
-                    let _ = respond(request, code, &json!({ "error": msg }));
-                    return;
-                }
-            };
-            let result = do_ingest(config, &req);
-            audit.record_result("serve-ingest", Some(req.table_name.as_str()), &result);
-            finish(request, result);
+        (Method::Post, "/v1/ingest") => handle_ingest(request, config, &principal, audit),
+        (Method::Post, "/v1/query") => handle_query(request, config, &principal, audit),
+        (Method::Post, "/v1/admin/corpus/create") => {
+            handle_admin_corpus(request, config, &principal, audit, true)
         }
-        (Method::Post, "/v1/query") => {
-            // Central policy (E2.6): query uses both the embedding endpoint (to
-            // embed the query) and the generation endpoint.
-            if let Some(reason) =
-                policy_denial(config, &[("embed", &config.embed), ("generate", &config.generate)])
-            {
-                let _ = respond(request, 403, &json!({ "error": reason }));
-                return;
-            }
-            let req: QueryRequest = match read_json(&mut request) {
-                Ok(r) => r,
-                Err((code, msg)) => {
-                    let _ = respond(request, code, &json!({ "error": msg }));
-                    return;
-                }
-            };
-            let result = do_query(config, &req);
-            audit.record_result("serve-query", Some(req.table_name.as_str()), &result);
-            finish(request, result);
+        (Method::Post, "/v1/admin/corpus/drop") => {
+            handle_admin_corpus(request, config, &principal, audit, false)
         }
         _ => {
             let _ = respond(request, 404, &json!({"error": "not found"}));
         }
     }
+}
+
+/// Resolve the caller's bearer token to a principal: the shared super-admin
+/// token first (constant-time), then any configured static principal / session
+/// token. Returns `None` for a missing header or unknown credential.
+fn authenticate(
+    config: &Config,
+    admin_token: &Option<String>,
+    request: &Request,
+) -> Option<Principal> {
+    let bearer = auth_header(request).and_then(|h| parse_bearer(&h).map(str::to_string))?;
+    if let Some(t) = admin_token {
+        if constant_time_eq(bearer.as_bytes(), t.as_bytes()) {
+            return Some(Principal::superadmin());
+        }
+    }
+    config.auth.authenticate(&bearer)
+}
+
+fn handle_login(mut request: Request, config: &Config, audit: &Logger) {
+    let req: LoginRequest = match read_json(&mut request) {
+        Ok(r) => r,
+        Err((code, msg)) => {
+            let _ = respond(request, code, &json!({ "error": msg }));
+            return;
+        }
+    };
+    let id_token = match req.id_token.as_deref().filter(|s| !s.is_empty()) {
+        Some(t) => t,
+        None => {
+            let _ = respond(request, 400, &json!({"error": "`id_token` is required"}));
+            return;
+        }
+    };
+    match config.auth.login_with_oidc(id_token) {
+        Ok((token, principal, exp)) => {
+            audit.record_result_as(
+                "serve-login",
+                Some(principal.subject.as_str()),
+                None,
+                &Ok::<(), anyhow::Error>(()),
+            );
+            let _ = respond(
+                request,
+                200,
+                &json!({
+                    "token": token,
+                    "subject": principal.subject,
+                    "tenant": principal.tenant,
+                    "expires_at": exp,
+                }),
+            );
+        }
+        Err(e) => {
+            let msg = secrets::redact(&format!("{e:#}"));
+            let failed: anyhow::Result<()> = Err(anyhow::anyhow!(msg.clone()));
+            audit.record_result_as("serve-login", None, None, &failed);
+            let _ = respond(request, 401, &json!({ "error": msg }));
+        }
+    }
+}
+
+fn handle_ingest(mut request: Request, config: &Config, principal: &Principal, audit: &Logger) {
+    let req: IngestRequest = match read_json(&mut request) {
+        Ok(r) => r,
+        Err((code, msg)) => {
+            let _ = respond(request, code, &json!({ "error": msg }));
+            return;
+        }
+    };
+    let corpus = match resolve_corpus(req.corpus.as_deref(), req.table_name.as_deref()) {
+        Ok(c) => c,
+        Err(msg) => {
+            let _ = respond(request, 400, &json!({ "error": msg }));
+            return;
+        }
+    };
+    // RBAC (E2.3): authorize before doing anything (including touching the DB).
+    if let Err(reason) = principal.authorize(&corpus, Action::Ingest) {
+        audit_denied(audit, "serve-ingest", principal, &corpus, &reason);
+        let _ = respond(request, 403, &json!({ "error": reason }));
+        return;
+    }
+    // Central policy (E2.6): ingest uses the embedding endpoint.
+    if let Some(reason) = policy_denial(config, &[("embed", &config.embed)]) {
+        let _ = respond(request, 403, &json!({ "error": reason }));
+        return;
+    }
+    let table = principal.physical_table(&corpus);
+    let result = do_ingest(config, &table, &req);
+    audit.record_result_as("serve-ingest", Some(principal.subject.as_str()), Some(corpus.as_str()), &result);
+    finish(request, result);
+}
+
+fn handle_query(mut request: Request, config: &Config, principal: &Principal, audit: &Logger) {
+    let req: QueryRequest = match read_json(&mut request) {
+        Ok(r) => r,
+        Err((code, msg)) => {
+            let _ = respond(request, code, &json!({ "error": msg }));
+            return;
+        }
+    };
+    let corpus = match resolve_corpus(req.corpus.as_deref(), req.table_name.as_deref()) {
+        Ok(c) => c,
+        Err(msg) => {
+            let _ = respond(request, 400, &json!({ "error": msg }));
+            return;
+        }
+    };
+    if let Err(reason) = principal.authorize(&corpus, Action::Query) {
+        audit_denied(audit, "serve-query", principal, &corpus, &reason);
+        let _ = respond(request, 403, &json!({ "error": reason }));
+        return;
+    }
+    // Central policy (E2.6): query uses both the embedding endpoint (to embed the
+    // query) and the generation endpoint.
+    if let Some(reason) =
+        policy_denial(config, &[("embed", &config.embed), ("generate", &config.generate)])
+    {
+        let _ = respond(request, 403, &json!({ "error": reason }));
+        return;
+    }
+    let table = principal.physical_table(&corpus);
+    let result = do_query(config, &table, &req);
+    audit.record_result_as("serve-query", Some(principal.subject.as_str()), Some(corpus.as_str()), &result);
+    finish(request, result);
+}
+
+fn handle_admin_corpus(
+    mut request: Request,
+    config: &Config,
+    principal: &Principal,
+    audit: &Logger,
+    create: bool,
+) {
+    let command = if create { "serve-corpus-create" } else { "serve-corpus-drop" };
+    let req: CorpusRequest = match read_json(&mut request) {
+        Ok(r) => r,
+        Err((code, msg)) => {
+            let _ = respond(request, code, &json!({ "error": msg }));
+            return;
+        }
+    };
+    let corpus = match resolve_corpus(req.corpus.as_deref(), req.table_name.as_deref()) {
+        Ok(c) => c,
+        Err(msg) => {
+            let _ = respond(request, 400, &json!({ "error": msg }));
+            return;
+        }
+    };
+    // RBAC (E2.3): administering a corpus requires the admin role.
+    if let Err(reason) = principal.authorize(&corpus, Action::Administer) {
+        audit_denied(audit, command, principal, &corpus, &reason);
+        let _ = respond(request, 403, &json!({ "error": reason }));
+        return;
+    }
+    let table = principal.physical_table(&corpus);
+    let result = (|| -> Result<Value> {
+        if create {
+            database::create_corpus(config, &table)?;
+        } else {
+            database::drop_corpus(config, &table)?;
+        }
+        Ok(json!({ "corpus": corpus, "action": if create { "created" } else { "dropped" } }))
+    })();
+    audit.record_result_as(command, Some(principal.subject.as_str()), Some(corpus.as_str()), &result);
+    finish(request, result);
+}
+
+/// Resolve the logical corpus name from `corpus` (preferred) or the legacy
+/// `table_name` alias, validating it as a safe identifier (E2.5: this is the
+/// only untrusted value that reaches SQL table names).
+fn resolve_corpus(corpus: Option<&str>, table_name: Option<&str>) -> Result<String, String> {
+    let name = corpus
+        .or(table_name)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "`corpus` is required".to_string())?;
+    if !identity::valid_identifier(name) {
+        return Err(format!(
+            "invalid corpus name '{name}': must be a lowercase letter followed by lowercase letters/digits"
+        ));
+    }
+    Ok(name.to_string())
+}
+
+/// Record an RBAC denial as a failure event attributed to the caller (E1.8).
+fn audit_denied(audit: &Logger, command: &str, principal: &Principal, corpus: &str, reason: &str) {
+    let denied: anyhow::Result<()> = Err(anyhow::anyhow!(reason.to_string()));
+    audit.record_result_as(command, Some(principal.subject.as_str()), Some(corpus), &denied);
 }
 
 /// Enforce the central provider/endpoint policy (E2.6) for the endpoints a
@@ -159,16 +371,16 @@ fn policy_denial(config: &Config, endpoints: &[(&str, &Endpoint)]) -> Option<Str
     None
 }
 
-fn do_ingest(config: &Config, req: &IngestRequest) -> Result<Value> {
-    if req.table_name.is_empty() || req.filename.is_empty() {
-        anyhow::bail!("`table_name` and `filename` are required");
+fn do_ingest(config: &Config, table: &str, req: &IngestRequest) -> Result<Value> {
+    if req.filename.is_empty() {
+        anyhow::bail!("`filename` is required");
     }
     let source_path = req.source_path.as_deref().unwrap_or(&req.filename);
     let mut client = database::connect(config)?;
     let outcome = document::ingest_one(
         &mut client,
         config,
-        &req.table_name,
+        table,
         &req.filename,
         source_path,
         &req.content,
@@ -182,12 +394,12 @@ fn do_ingest(config: &Config, req: &IngestRequest) -> Result<Value> {
     }))
 }
 
-fn do_query(config: &Config, req: &QueryRequest) -> Result<Value> {
-    if req.table_name.is_empty() || req.query.trim().is_empty() {
-        anyhow::bail!("`table_name` and a non-empty `query` are required");
+fn do_query(config: &Config, table: &str, req: &QueryRequest) -> Result<Value> {
+    if req.query.trim().is_empty() {
+        anyhow::bail!("a non-empty `query` is required");
     }
     let top_k = req.top_k.unwrap_or(DEFAULT_TOP_K);
-    let ans = generate::answer(config, &req.query, &req.table_name, top_k)?;
+    let ans = generate::answer(config, &req.query, table, top_k)?;
     let sources: Vec<Value> = ans
         .sources
         .iter()
@@ -232,15 +444,6 @@ fn auth_header(request: &Request) -> Option<String> {
         .iter()
         .find(|h| h.field.equiv("Authorization"))
         .map(|h| h.value.as_str().to_string())
-}
-
-/// Constant-time bearer-token check. Returns false for a missing header or a
-/// non-`Bearer` scheme.
-fn token_matches(auth_header: Option<&str>, expected: &str) -> bool {
-    match auth_header.and_then(parse_bearer) {
-        Some(tok) => constant_time_eq(tok.as_bytes(), expected.as_bytes()),
-        None => false,
-    }
 }
 
 fn parse_bearer(header: &str) -> Option<&str> {
@@ -291,10 +494,15 @@ mod tests {
     }
 
     #[test]
-    fn token_matches_requires_correct_bearer() {
-        assert!(token_matches(Some("Bearer t0pSecret"), "t0pSecret"));
-        assert!(!token_matches(Some("Bearer wrong"), "t0pSecret"));
-        assert!(!token_matches(Some("t0pSecret"), "t0pSecret")); // missing Bearer prefix
-        assert!(!token_matches(None, "t0pSecret"));
+    fn resolve_corpus_accepts_alias_and_rejects_bad_names() {
+        assert_eq!(resolve_corpus(Some("kb"), None).unwrap(), "kb");
+        // Legacy `table_name` alias still works.
+        assert_eq!(resolve_corpus(None, Some("runbooks")).unwrap(), "runbooks");
+        // `corpus` wins over the alias.
+        assert_eq!(resolve_corpus(Some("a"), Some("b")).unwrap(), "a");
+        // Missing and injection-shaped names are rejected.
+        assert!(resolve_corpus(None, None).is_err());
+        assert!(resolve_corpus(Some("kb; drop table"), None).is_err());
+        assert!(resolve_corpus(Some("my_corpus"), None).is_err());
     }
 }

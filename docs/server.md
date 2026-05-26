@@ -7,8 +7,10 @@ not a fork. Ingestion runs through `document::ingest_one` and querying through
 (secret redaction, egress policy, TLS, the embedding-dimension guard, PII
 redaction, audit logging) applies unchanged.
 
-This is the first piece of the Phase E2 platform tier. Identity/RBAC and
-multi-tenancy are deferred to M9 (#75); M8 ships single-token auth.
+A single shared token (below) is the simplest deployment. **SSO, role-based
+access, and tenant isolation** are layered on top in M9 — see
+**[identity.md](identity.md)** for `beskar login`, OIDC, RBAC, per-tenant
+corpora, and the `/v1/login`, `/v1/whoami`, and `/v1/admin/corpus/*` endpoints.
 
 ## Running
 
