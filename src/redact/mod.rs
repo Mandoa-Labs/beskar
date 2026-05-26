@@ -58,6 +58,7 @@ const PRESETS: &[(&str, &str)] = &[
 
 const DEFAULT_REPLACEMENT: &str = "[REDACTED:{name}]";
 
+#[derive(Debug)]
 struct Rule {
     name: String,
     re: Regex,
@@ -68,6 +69,7 @@ struct Rule {
 
 /// A compiled set of redaction rules. Build with [`Redactor::from_config`];
 /// `None` means redaction is disabled.
+#[derive(Debug)]
 pub struct Redactor {
     rules: Vec<Rule>,
 }
