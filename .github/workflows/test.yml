@@ -165,6 +165,33 @@ jobs:
           echo "$out" | grep -q 'invalid redaction regex' || {
             echo "::error::expected an 'invalid redaction regex' finding"; exit 1; }
 
+      - name: Verify `db --verify` is wired and validates its args (E1.12)
+        run: |
+          # No PostgreSQL on the runner, so this exercises the CLI wiring and the
+          # arg-validation path (which runs before any DB connection). The full
+          # integrity check is covered by docs/backup-restore.md against a real DB.
+          mkdir -p "$HOME/.config/beskar"
+          cat > "$HOME/.config/beskar/config.yaml" <<'EOF'
+          pat: LITERALPAT000000001
+          pghost: localhost
+          pguser: u
+          pgport: "5432"
+          pgdatabase: d
+          pgpassword: LITERALPG0000000002
+          EOF
+          chmod 600 "$HOME/.config/beskar/config.yaml"
+          ./target/debug/beskar db --help | grep -q -- '--verify' || {
+            echo "::error::db --verify flag is not wired into the CLI"; exit 1; }
+          # --verify without --table-name must fail closed with a clear message,
+          # before attempting to connect to a database.
+          set +e
+          out="$(./target/debug/beskar db --verify 2>&1)"; code=$?
+          set -e
+          echo "$out"
+          [ "$code" -ne 0 ] || { echo "::error::db --verify without --table-name should exit non-zero"; exit 1; }
+          echo "$out" | grep -q 'table-name is required' || {
+            echo "::error::expected a clear --table-name-required message"; exit 1; }
+
       - name: Verify audit log emits one redacted, schema-valid event (E1.8)
         run: |
           mkdir -p "$HOME/.config/beskar"
