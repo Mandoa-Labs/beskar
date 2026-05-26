@@ -215,6 +215,25 @@ beskar 0.1.0
 FIPS mode: unavailable (standard build; rebuild with --features fips)
 ```
 
+### `beskar serve`
+
+Serve ingest + query over an authenticated HTTP+JSON API, **reusing the same
+core library the CLI uses** (PRD §6.3 E2.1). Requires a bearer token; fails
+closed without one.
+
+```bash
+export BESKAR_SERVE_TOKEN="$(openssl rand -hex 32)"
+beskar serve --addr 127.0.0.1:8080
+
+curl -s http://127.0.0.1:8080/health                                 # {"status":"ok"}
+curl -s http://127.0.0.1:8080/v1/query \
+  -H "Authorization: Bearer $BESKAR_SERVE_TOKEN" \
+  -d '{"table_name":"kb","query":"...","top_k":5}'
+```
+
+Endpoints: `GET /health`, `POST /v1/ingest`, `POST /v1/query`. Full reference —
+auth, request/response shapes, error codes — is in [`docs/server.md`](docs/server.md).
+
 ## Enterprise hardening
 
 These controls (PRD §6.2 E1.1–E1.10) make beskar safe to run in regulated and
@@ -451,6 +470,7 @@ cargo fmt             # Format code
 - `src/net/` — Outbound HTTP client + egress policy (proxy / CA bundle / allowlist / `--offline`)
 - `src/secrets/` — Pluggable secret backends (`scheme://` references) + redaction
 - `src/redact/` — Pre-embedding PII/secret redaction hooks (built-in presets + custom patterns)
+- `src/serve/` — `serve` HTTP API (tiny_http) reusing the ingest/query core, bearer-auth
 - `src/fips/` — FIPS 140-3 runtime mode (OpenSSL provider activation, validated SHA-256)
 - `src/utils/` — Config parsing, secret resolution, and `config lint`
 - `terraform/` — Azure PostgreSQL Flexible Server with pgvector allowlisted
