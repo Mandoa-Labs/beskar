@@ -20,6 +20,7 @@ cargo fmt             # Format code
 - `terraform/` — Terraform config for provisioning Azure PostgreSQL Flexible Server with pgvector allowlisted
 - `src/document/` — `beskar document --path <PATH>` command, walks directories for .md/.txt files, chunks text with overlap
 - `src/generate/` — `beskar generate` command
+- `src/redact/` — Pre-embedding PII/secret redaction hooks (E1.11): built-in presets + custom regex patterns, applied before text is embedded, stored, or sent to a generation provider
 - `src/utils/` — Shared utilities, config reading (`read_config()`)
 
 ## Key Dependencies

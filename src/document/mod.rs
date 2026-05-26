@@ -22,13 +22,15 @@ pub fn document(path: &str, table_name: &str, config: &Config) -> Result<()> {
             continue;
         }
 
-        let content = match read_document_content(file_path)? {
+        let original = match read_document_content(file_path)? {
             Some(content) => content,
             None => continue,
         };
 
         println!("Processing: {}", file_path.display());
-        let sha = sha256_hex(&content);
+        // Hash the source file as it sits on disk, so change-detection tracks the
+        // original even when redaction would collapse two files to the same text.
+        let sha = sha256_hex(&original);
 
         let filename = file_path.file_name().unwrap().to_str().unwrap();
         let source_path = file_path.to_str().unwrap();
@@ -40,6 +42,21 @@ pub fn document(path: &str, table_name: &str, config: &Config) -> Result<()> {
                 continue;
             }
         }
+
+        // Pre-embedding redaction (E1.11): scrub configured PII/secret patterns
+        // before the text is embedded, stored, or later sent to a generation
+        // provider. The redacted text is what we both store and embed, so no raw
+        // match ever leaves the machine.
+        let content = match &config.redactor {
+            Some(redactor) => {
+                let (redacted, n) = redactor.redact_counted(&original);
+                if n > 0 {
+                    println!("Redacted {n} match(es) in {}", file_path.display());
+                }
+                redacted
+            }
+            None => original,
+        };
 
         let chunks = chunk_text(&content, chunk_size, overlap);
         println!("Created {} chunks for {}", chunks.len(), file_path.display());

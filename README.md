@@ -315,6 +315,37 @@ through the secret-redaction registry, so **no credential can leak into the
 log** (verified in CI). Sink-write failures degrade to a warning and never fail
 the command. Full schema and JSON Schema: [`docs/audit-log.md`](docs/audit-log.md).
 
+### Data-handling controls (PII redaction)
+
+Beskar can scrub configured patterns out of text **before it is embedded,
+stored, or sent to a generation provider** (PRD §6.2 E1.11), so PII or secrets in
+your source documents and queries never leave the machine. It is **off by
+default**; enable it with a `redaction` block in `config.yaml`:
+
+```yaml
+redaction:
+  enabled: true
+  # Built-in detectors, by name:
+  presets: [email, us-ssn, credit-card, ipv4, phone-na]
+  # Plus any custom rules (regex syntax is the `regex` crate's):
+  patterns:
+    - name: employee-id
+      regex: 'EMP-\d{6}'
+      replacement: '[STAFF]'      # optional; defaults to the template below
+  replacement: '[REDACTED:{name}]' # optional; `{name}` is the matching rule
+```
+
+When enabled, redaction runs on every egress path: each document is scrubbed
+before chunking/embedding and before its text is stored, the query is scrubbed
+before retrieval, and retrieved context is scrubbed again before it reaches the
+generation provider (defense in depth for corpora ingested before redaction was
+turned on). `beskar config lint` validates the patterns compile, and a misconfig
+(unknown preset, bad regex, or `enabled` with no rules) **fails closed** rather
+than embedding unredacted text. Redaction is a best-effort control, not a
+guarantee — see the per-provider **["what leaves the machine"](docs/data-flow.md)**
+data-flow statement for exactly what egresses for each provider, and how
+redaction, `--offline`, and the egress allowlist bound it.
+
 ## Supply-chain security
 
 Every release is signed, checksummed, attested, and shipped with an SBOM, so you
@@ -379,6 +410,7 @@ cargo fmt             # Format code
 - `src/generate/` — `generate` command (retrieve → compose → stream)
 - `src/net/` — Outbound HTTP client + egress policy (proxy / CA bundle / allowlist / `--offline`)
 - `src/secrets/` — Pluggable secret backends (`scheme://` references) + redaction
+- `src/redact/` — Pre-embedding PII/secret redaction hooks (built-in presets + custom patterns)
 - `src/fips/` — FIPS 140-3 runtime mode (OpenSSL provider activation, validated SHA-256)
 - `src/utils/` — Config parsing, secret resolution, and `config lint`
 - `terraform/` — Azure PostgreSQL Flexible Server with pgvector allowlisted

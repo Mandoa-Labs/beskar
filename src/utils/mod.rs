@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::net::{self, EgressArgs, EgressPolicy, HttpClient};
+use crate::redact::{RedactionConfig, Redactor};
 use crate::secrets;
 
 const DEFAULT_OPENAI_BASE: &str = "https://api.openai.com/v1";
@@ -100,6 +101,10 @@ pub struct RawConfig {
     // Egress controls (E1.6).
     #[serde(default)]
     pub egress: EgressConfig,
+
+    // Pre-embedding PII/secret redaction hooks (E1.11).
+    #[serde(default)]
+    pub redaction: RedactionConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +145,8 @@ pub struct Config {
     pub generate: Endpoint,
     /// Shared HTTP client carrying the egress policy + CA bundle.
     pub http: HttpClient,
+    /// Pre-embedding redaction hook (E1.11); `None` when disabled in config.
+    pub redactor: Option<Redactor>,
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +245,11 @@ impl Config {
             client_key: raw.pgsslkey.clone(),
         };
 
+        // 5. Pre-embedding redaction hooks (E1.11). Fails closed on a bad
+        //    pattern rather than embedding text the operator meant to scrub.
+        let redactor = Redactor::from_config(&raw.redaction)
+            .context("invalid `redaction` config")?;
+
         Ok(Config {
             pghost: raw.pghost.clone(),
             pguser: raw.pguser.clone(),
@@ -248,6 +260,7 @@ impl Config {
             embed,
             generate,
             http,
+            redactor,
         })
     }
 
@@ -266,6 +279,10 @@ impl Config {
             secrets::redact(&self.generate.api_key));
         let policy = self.http.policy();
         eprintln!("  egress: offline={} allow_hosts={:?}", policy.offline(), policy.allow_hosts());
+        match &self.redactor {
+            Some(r) => eprintln!("  redaction: enabled rules={:?}", r.rule_names()),
+            None => eprintln!("  redaction: disabled"),
+        }
     }
 }
 
@@ -426,6 +443,17 @@ pub fn lint() -> Result<bool> {
     if let Some(mode_issue) = lax_mode_issue(&path) {
         println!("  [permissions] {mode_issue}");
         issues += 1;
+    }
+
+    // Validate the redaction hooks (E1.11) compile, so a bad preset/regex is
+    // caught here rather than at ingestion time.
+    match Redactor::from_config(&raw.redaction) {
+        Ok(Some(r)) => println!("  [redaction] enabled with rules: {:?}", r.rule_names()),
+        Ok(None) => {}
+        Err(e) => {
+            println!("  [redaction] {e:#}");
+            issues += 1;
+        }
     }
 
     if issues == 0 {

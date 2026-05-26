@@ -18,6 +18,10 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde_json = "1.0.149"
 anyhow = "1"
 hex = "0.4"
+# Pattern engine for the pre-embedding PII/secret redaction hooks (PRD §6.2
+# E1.11). User-configured and built-in patterns are scrubbed from text before
+# it is embedded, stored, or sent to a generation provider — see src/redact/.
+regex = "1.12.3"
 
 # Optional document-format extractors, enabled via the `docx` / `pdf` features.
 zip = { version = "2", optional = true }
