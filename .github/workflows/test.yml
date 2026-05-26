@@ -116,6 +116,55 @@ jobs:
             echo "::error::config lint should exit non-zero on plaintext secrets / lax mode"; exit 1
           fi
 
+      - name: Verify redaction hooks are validated + fail closed (E1.11)
+        run: |
+          mkdir -p "$HOME/.config/beskar"
+          # Valid: enabled with built-in presets + a custom pattern; secrets are
+          # references (not literals) and perms are tight, so lint has no findings
+          # and must report the active redaction rules and exit zero.
+          cat > "$HOME/.config/beskar/config.yaml" <<'EOF'
+          pat: env://OPENAI_API_KEY
+          pghost: localhost
+          pguser: u
+          pgport: "5432"
+          pgdatabase: d
+          pgpassword: env://PGPASSWORD
+          redaction:
+            enabled: true
+            presets: [email, us-ssn]
+            patterns:
+              - name: employee-id
+                regex: 'EMP-\d{6}'
+          EOF
+          chmod 600 "$HOME/.config/beskar/config.yaml"
+          out="$(./target/debug/beskar config lint)"; echo "$out"
+          echo "$out" | grep -q 'redaction] enabled with rules' || {
+            echo "::error::config lint did not report the active redaction rules"; exit 1; }
+
+          # Invalid regex must fail closed: non-zero exit, naming the bad rule,
+          # rather than silently embedding unredacted text.
+          cat > "$HOME/.config/beskar/config.yaml" <<'EOF'
+          pat: env://OPENAI_API_KEY
+          pghost: localhost
+          pguser: u
+          pgport: "5432"
+          pgdatabase: d
+          pgpassword: env://PGPASSWORD
+          redaction:
+            enabled: true
+            patterns:
+              - name: broken
+                regex: '('
+          EOF
+          chmod 600 "$HOME/.config/beskar/config.yaml"
+          set +e
+          out="$(./target/debug/beskar config lint 2>&1)"; code=$?
+          set -e
+          echo "$out"
+          [ "$code" -ne 0 ] || { echo "::error::lint should exit non-zero on an invalid redaction regex"; exit 1; }
+          echo "$out" | grep -q 'invalid redaction regex' || {
+            echo "::error::expected an 'invalid redaction regex' finding"; exit 1; }
+
       - name: Verify audit log emits one redacted, schema-valid event (E1.8)
         run: |
           mkdir -p "$HOME/.config/beskar"

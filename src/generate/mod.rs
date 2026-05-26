@@ -38,6 +38,13 @@ pub fn generate(
         return Ok(());
     }
 
+    // Pre-embedding redaction (E1.11): scrub the query before it is embedded for
+    // retrieval or echoed back to the generation provider.
+    let query = match &config.redactor {
+        Some(r) => r.redact(&query),
+        None => query,
+    };
+
     let query_embedding = embed::embed_one(config, &query)?;
 
     let mut client = database::connect(config)?;
@@ -57,11 +64,20 @@ pub fn generate(
         }
     }
 
-    let chunks = database::query_chunks(&mut client, table_name, &query_embedding, top_k)?;
+    let mut chunks = database::query_chunks(&mut client, table_name, &query_embedding, top_k)?;
 
     if chunks.is_empty() {
         eprintln!("No chunks found in '{}_chunks'. Has the corpus been ingested?", table_name);
         return Ok(());
+    }
+
+    // Defense in depth: also redact retrieved context, so a corpus ingested
+    // before redaction was enabled still can't leak PII to the generation
+    // provider (E1.11).
+    if let Some(r) = &config.redactor {
+        for c in &mut chunks {
+            c.content = r.redact(&c.content);
+        }
     }
 
     let messages = build_messages(&query, &chunks);
