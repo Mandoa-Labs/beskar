@@ -237,6 +237,15 @@ retention window) that the server enforces for **every caller** — a denied
 provider/endpoint returns `403` (PRD §6.3 E2.6). Full reference — auth,
 request/response shapes, error codes, policy — is in [`docs/server.md`](docs/server.md).
 
+The server also powers the platform tier:
+
+- **SCIM 2.0 provisioning** (PRD §6.3 E2.4) — enable `scim.enabled` and point your
+  IdP at `/scim/v2`; creating/deactivating a user there provisions/deprovisions
+  it in Beskar (stored in your Postgres). See [`docs/scim.md`](docs/scim.md).
+- **Observability** (PRD §6.3 E2.7) — unauthenticated `GET /health`, `GET /ready`
+  (DB-backed), and a Prometheus `GET /metrics` endpoint, plus opt-in OpenTelemetry
+  (OTLP/HTTP) trace export. See [`docs/observability.md`](docs/observability.md).
+
 ## Enterprise hardening
 
 These controls (PRD §6.2 E1.1–E1.10) make beskar safe to run in regulated and
@@ -473,8 +482,10 @@ cargo fmt             # Format code
 - `src/net/` — Outbound HTTP client + egress policy (proxy / CA bundle / allowlist / `--offline`)
 - `src/secrets/` — Pluggable secret backends (`scheme://` references) + redaction
 - `src/redact/` — Pre-embedding PII/secret redaction hooks (built-in presets + custom patterns)
-- `src/serve/` — `serve` HTTP API (tiny_http) reusing the ingest/query core, bearer-auth
+- `src/serve/` — `serve` HTTP API (tiny_http) reusing the ingest/query core, bearer-auth; also mounts policy, SCIM, and observability endpoints
 - `src/policy/` — Central admin policy (allowed providers/endpoints, redaction, retention) enforced by `serve`
+- `src/scim/` — SCIM 2.0 provisioning (`/scim/v2/{Users,Groups}`) served by `serve`, backed by Postgres
+- `src/observability/` — Prometheus `/metrics`, OTLP trace export, and health/readiness for `serve`
 - `src/fips/` — FIPS 140-3 runtime mode (OpenSSL provider activation, validated SHA-256)
 - `src/utils/` — Config parsing, secret resolution, and `config lint`
 - `terraform/` — Azure PostgreSQL Flexible Server with pgvector allowlisted

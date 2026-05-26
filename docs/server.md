@@ -93,13 +93,26 @@ curl -s http://127.0.0.1:8080/v1/query \
 `sources` lists the cited chunks. `note` is non-null only when no answer could be
 produced (e.g. an empty corpus).
 
+### Operational & platform endpoints
+
+Beyond ingest/query, `beskar serve` also exposes:
+
+| Endpoint | Auth | Docs |
+| --- | --- | --- |
+| `GET /health`, `GET /ready`, `GET /metrics` | none | [Observability](observability.md) (E2.7) |
+| `/scim/v2/*` | bearer | [SCIM provisioning](scim.md) (E2.4) |
+
+The probes and `/metrics` are unauthenticated so liveness checks and Prometheus
+scrapers work without credentials; SCIM uses the same bearer token as the core
+API.
+
 ## Responses & errors
 
 - `200` — success, JSON body as above.
 - `400` — malformed JSON or missing required fields.
 - `401` — missing/invalid bearer token.
 - `403` — the request is denied by [central policy](#central-policy-e26).
-- `404` — unknown route.
+- `404` — unknown route (or SCIM disabled).
 - `500` — a core error; the message is run through the secret-redaction registry
   (E1.3) before it is returned, so credentials never appear in an error body.
 

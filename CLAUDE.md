@@ -20,8 +20,10 @@ cargo fmt             # Format code
 - `terraform/` — Terraform config for provisioning Azure PostgreSQL Flexible Server with pgvector allowlisted
 - `src/document/` — `beskar document --path <PATH>` command, walks directories for .md/.txt files, chunks text with overlap
 - `src/generate/` — `beskar generate` command
-- `src/serve/` — `beskar serve` command (E2.1): authenticated HTTP API (tiny_http, blocking) exposing ingest + query, reusing the CLI core (`document::ingest_one`, `generate::answer`)
+- `src/serve/` — `beskar serve` command (E2.1): authenticated HTTP API (tiny_http, blocking) exposing ingest + query, reusing the CLI core (`document::ingest_one`, `generate::answer`). Also mounts the platform-tier endpoints: central policy enforcement (E2.6), SCIM (E2.4), and observability (E2.7). Operational probes (`/health`, `/ready`, `/metrics`) are unauthenticated; everything else needs the bearer token
 - `src/policy/` — Central admin policy (E2.6): allowed providers/endpoints, `require_redaction`, retention window; enforced per-request server-side by `serve` (denied → HTTP 403)
+- `src/scim/` — SCIM 2.0 provisioning (E2.4): `/scim/v2/{Users,Groups}` served by `serve` when `scim.enabled`, so an IdP can provision/deprovision users & groups. `ScimStore` trait with a Postgres-backed store (tables `beskar_scim_users` / `beskar_scim_groups`, auto-created) and an in-memory store for tests. See `docs/scim.md`
+- `src/observability/` — Server observability (E2.7): Prometheus `/metrics` (request counter + latency histogram), best-effort OTLP/HTTP JSON trace export (opt-in via OTLP endpoint), and `/health` + `/ready`. See `docs/observability.md`
 - `src/redact/` — Pre-embedding PII/secret redaction hooks (E1.11): built-in presets + custom regex patterns, applied before text is embedded, stored, or sent to a generation provider
 - `src/utils/` — Shared utilities, config reading (`read_config()`)
 
