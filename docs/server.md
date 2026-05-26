@@ -98,6 +98,7 @@ produced (e.g. an empty corpus).
 - `200` — success, JSON body as above.
 - `400` — malformed JSON or missing required fields.
 - `401` — missing/invalid bearer token.
+- `403` — the request is denied by [central policy](#central-policy-e26).
 - `404` — unknown route.
 - `500` — a core error; the message is run through the secret-redaction registry
   (E1.3) before it is returned, so credentials never appear in an error body.
@@ -105,3 +106,46 @@ produced (e.g. an empty corpus).
 Each `ingest`/`query` request also emits an audit event (`serve-ingest` /
 `serve-query`) through the same sink as the CLI when `BESKAR_AUDIT_SINK` /
 `BESKAR_AUDIT_FILE` are set (E1.8).
+
+## Central policy (E2.6)
+
+The operator sets a `policy` block in the server's `config.yaml`. It is the
+**central governance point**: `beskar serve` enforces it for *every* caller, and
+no API client can override it. All fields are optional (omitting `policy` keeps
+the previous behavior).
+
+```yaml
+policy:
+  allow_providers: [ollama, openai]   # if set, only these providers may be used
+  deny_providers: [bedrock]           # never allowed; takes precedence over allow
+  allow_endpoints: [llm.internal]     # if set, model-endpoint hosts must be listed
+  require_redaction: true             # the server won't start unless redaction is on
+  retention_days: 90                  # declared data-retention window (see below)
+```
+
+Enforcement:
+
+- **Providers / endpoints** — on **every request**, the providers and endpoint
+  hosts the request would use (embedding for `ingest`; embedding + generation for
+  `query`) are checked against the policy. A denied provider or endpoint returns
+  **`403`** with a clear reason — for every caller, with no way to opt out.
+- **`require_redaction`** — checked at startup: if set and redaction (E1.11) is
+  disabled, the server **fails closed** and refuses to start.
+- **`retention_days`** — the declared retention window for corpus data. Beskar
+  surfaces it (below) and records it as policy; pruning is enforced by your
+  database/data-lifecycle process, since corpus data lives in **your** Postgres.
+
+### `GET /v1/policy`
+
+Authenticated. Returns the active policy, so admins and callers can see exactly
+what is enforced:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/policy -H "Authorization: Bearer $BESKAR_SERVE_TOKEN"
+# {"allow_providers":["ollama","openai"],"deny_providers":["bedrock"],
+#  "allow_endpoints":["llm.internal"],"require_redaction":true,"retention_days":90}
+```
+
+The policy lives in the shared config and is also reported by
+`beskar config lint` and `--verbose`; it is **enforced by the server** (the
+central enforcement point for all callers).

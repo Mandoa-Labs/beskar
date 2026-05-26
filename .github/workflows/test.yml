@@ -250,6 +250,58 @@ jobs:
           [ "$noauth" = 401 ] || { echo "::error::unauthenticated query should be 401"; exit 1; }
           [ "$wrong"  = 401 ] || { echo "::error::wrong-token query should be 401"; exit 1; }
 
+      - name: Verify central policy is enforced server-side for every caller (E2.6)
+        run: |
+          mkdir -p "$HOME/.config/beskar"
+
+          # 1. A policy denying the configured provider must 403 every caller
+          #    (the default provider is openai), before any DB access.
+          cat > "$HOME/.config/beskar/config.yaml" <<'EOF'
+          pat: LITERALPAT000000001
+          pghost: localhost
+          pguser: u
+          pgport: "5432"
+          pgdatabase: d
+          pgpassword: LITERALPG0000000002
+          policy:
+            deny_providers: [openai]
+          EOF
+          chmod 600 "$HOME/.config/beskar/config.yaml"
+          ./target/debug/beskar serve --addr 127.0.0.1:8725 --token testtok > /tmp/serve-policy.log 2>&1 &
+          SRV=$!
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8725/health 2>/dev/null; then break; fi
+            sleep 0.3
+          done
+          q=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer testtok' -X POST http://127.0.0.1:8725/v1/query  -d '{"table_name":"kb","query":"hi"}')
+          ing=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer testtok' -X POST http://127.0.0.1:8725/v1/ingest -d '{"table_name":"kb","filename":"a.md","content":"x"}')
+          pol=$(curl -s -H 'Authorization: Bearer testtok' http://127.0.0.1:8725/v1/policy)
+          kill "$SRV" 2>/dev/null || true
+          echo "--- serve-policy.log ---"; cat /tmp/serve-policy.log
+          echo "query=$q ingest=$ing policy=$pol"
+          [ "$q"   = 403 ] || { echo "::error::denied-provider query should be 403 for every caller"; exit 1; }
+          [ "$ing" = 403 ] || { echo "::error::denied-provider ingest should be 403 for every caller"; exit 1; }
+          echo "$pol" | grep -q 'deny_providers' || { echo "::error::/v1/policy should report the active policy"; exit 1; }
+
+          # 2. require_redaction with redaction disabled must fail closed at startup.
+          cat > "$HOME/.config/beskar/config.yaml" <<'EOF'
+          pat: LITERALPAT000000001
+          pghost: localhost
+          pguser: u
+          pgport: "5432"
+          pgdatabase: d
+          pgpassword: LITERALPG0000000002
+          policy:
+            require_redaction: true
+          EOF
+          chmod 600 "$HOME/.config/beskar/config.yaml"
+          set +e
+          out="$(./target/debug/beskar serve --addr 127.0.0.1:8726 --token testtok 2>&1)"; code=$?
+          set -e
+          echo "$out"
+          [ "$code" -ne 0 ] || { echo "::error::serve must fail closed when policy requires redaction but it is off"; exit 1; }
+          echo "$out" | grep -q 'requires redaction' || { echo "::error::expected a require-redaction message"; exit 1; }
+
       - name: Verify audit log emits one redacted, schema-valid event (E1.8)
         run: |
           mkdir -p "$HOME/.config/beskar"

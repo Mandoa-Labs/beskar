@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::net::{self, EgressArgs, EgressPolicy, HttpClient};
+use crate::policy::{Policy, PolicyConfig};
 use crate::redact::{RedactionConfig, Redactor};
 use crate::secrets;
 
@@ -105,6 +106,10 @@ pub struct RawConfig {
     // Pre-embedding PII/secret redaction hooks (E1.11).
     #[serde(default)]
     pub redaction: RedactionConfig,
+
+    // Central admin policy enforced by `beskar serve` (E2.6).
+    #[serde(default)]
+    pub policy: PolicyConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +152,8 @@ pub struct Config {
     pub http: HttpClient,
     /// Pre-embedding redaction hook (E1.11); `None` when disabled in config.
     pub redactor: Option<Redactor>,
+    /// Central admin policy enforced by `beskar serve` (E2.6).
+    pub policy: Policy,
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +257,9 @@ impl Config {
         let redactor = Redactor::from_config(&raw.redaction)
             .context("invalid `redaction` config")?;
 
+        // 6. Central admin policy (E2.6), enforced by `beskar serve`.
+        let policy = Policy::from_config(&raw.policy);
+
         Ok(Config {
             pghost: raw.pghost.clone(),
             pguser: raw.pguser.clone(),
@@ -261,6 +271,7 @@ impl Config {
             generate,
             http,
             redactor,
+            policy,
         })
     }
 
@@ -283,6 +294,7 @@ impl Config {
             Some(r) => eprintln!("  redaction: enabled rules={:?}", r.rule_names()),
             None => eprintln!("  redaction: disabled"),
         }
+        eprintln!("  policy: {}", self.policy.summary());
     }
 }
 
@@ -452,6 +464,20 @@ pub fn lint() -> Result<bool> {
         Ok(None) => {}
         Err(e) => {
             println!("  [redaction] {e:#}");
+            issues += 1;
+        }
+    }
+
+    // Central policy (E2.6): report it, and flag a require_redaction policy that
+    // its own config would violate — `beskar serve` would fail closed on it.
+    let policy = Policy::from_config(&raw.policy);
+    if policy.is_active() {
+        println!("  [policy] {}", policy.summary());
+        if policy.require_redaction() && !raw.redaction.enabled {
+            println!(
+                "  [policy] require_redaction is set but `redaction.enabled` is false; \
+                 `beskar serve` will refuse to start"
+            );
             issues += 1;
         }
     }

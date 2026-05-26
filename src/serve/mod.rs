@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::audit::Logger;
-use crate::utils::Config;
-use crate::{database, document, generate, secrets};
+use crate::utils::{Config, Endpoint};
+use crate::{database, document, generate, net, secrets};
 
 const DEFAULT_TOP_K: usize = 5;
 
@@ -58,9 +58,20 @@ pub fn serve(args: &ServeArgs, config: &Config) -> Result<()> {
         .filter(|t| !t.is_empty())
         .context("`beskar serve` requires an API token; pass --token or set BESKAR_SERVE_TOKEN")?;
 
+    // Central policy (E2.6): fail closed before binding if the policy requires
+    // redaction but it is disabled — no caller should be served without it.
+    if config.policy.require_redaction() && config.redactor.is_none() {
+        anyhow::bail!(
+            "central policy requires redaction, but it is disabled; set `redaction.enabled: true`"
+        );
+    }
+
     let server = Server::http(args.addr.as_str())
         .map_err(|e| anyhow::anyhow!("failed to bind {}: {e}", args.addr))?;
     eprintln!("beskar serve listening on http://{} (Ctrl-C to stop)", args.addr);
+    if config.policy.is_active() {
+        eprintln!("central policy active: {}", config.policy.summary());
+    }
 
     // Requests are audited through the same E1.8 logger as the CLI.
     let audit = Logger::from_env();
@@ -88,7 +99,17 @@ fn handle(mut request: Request, config: &Config, token: &str, audit: &Logger) {
     }
 
     match (&method, path.as_str()) {
+        // Surface the active central policy so admins/callers can see what's
+        // enforced (E2.6).
+        (Method::Get, "/v1/policy") => {
+            let _ = respond(request, 200, &config.policy.as_json());
+        }
         (Method::Post, "/v1/ingest") => {
+            // Central policy (E2.6): ingest uses the embedding endpoint.
+            if let Some(reason) = policy_denial(config, &[("embed", &config.embed)]) {
+                let _ = respond(request, 403, &json!({ "error": reason }));
+                return;
+            }
             let req: IngestRequest = match read_json(&mut request) {
                 Ok(r) => r,
                 Err((code, msg)) => {
@@ -101,6 +122,14 @@ fn handle(mut request: Request, config: &Config, token: &str, audit: &Logger) {
             finish(request, result);
         }
         (Method::Post, "/v1/query") => {
+            // Central policy (E2.6): query uses both the embedding endpoint (to
+            // embed the query) and the generation endpoint.
+            if let Some(reason) =
+                policy_denial(config, &[("embed", &config.embed), ("generate", &config.generate)])
+            {
+                let _ = respond(request, 403, &json!({ "error": reason }));
+                return;
+            }
             let req: QueryRequest = match read_json(&mut request) {
                 Ok(r) => r,
                 Err((code, msg)) => {
@@ -116,6 +145,18 @@ fn handle(mut request: Request, config: &Config, token: &str, audit: &Logger) {
             let _ = respond(request, 404, &json!({"error": "not found"}));
         }
     }
+}
+
+/// Enforce the central provider/endpoint policy (E2.6) for the endpoints a
+/// request will use. Returns the denial reason for a 403, or `None` if allowed.
+fn policy_denial(config: &Config, endpoints: &[(&str, &Endpoint)]) -> Option<String> {
+    for &(role, ep) in endpoints {
+        let host = net::host_of(&ep.base_url);
+        if let Err(reason) = config.policy.check_endpoint(role, &ep.provider, host.as_deref()) {
+            return Some(reason);
+        }
+    }
+    None
 }
 
 fn do_ingest(config: &Config, req: &IngestRequest) -> Result<Value> {
