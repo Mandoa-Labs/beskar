@@ -239,12 +239,31 @@ request/response shapes, error codes, policy — is in [`docs/server.md`](docs/s
 
 The server also powers the platform tier:
 
+- **Identity, RBAC & tenant isolation** (PRD §6.3 E2.2/E2.3/E2.5) — SSO via
+  `beskar login` (below), role-based access (`reader`/`author`/`admin`), and
+  per-tenant corpora. See [`docs/identity.md`](docs/identity.md).
 - **SCIM 2.0 provisioning** (PRD §6.3 E2.4) — enable `scim.enabled` and point your
   IdP at `/scim/v2`; creating/deactivating a user there provisions/deprovisions
   it in Beskar (stored in your Postgres). See [`docs/scim.md`](docs/scim.md).
 - **Observability** (PRD §6.3 E2.7) — unauthenticated `GET /health`, `GET /ready`
   (DB-backed), and a Prometheus `GET /metrics` endpoint, plus opt-in OpenTelemetry
   (OTLP/HTTP) trace export. See [`docs/observability.md`](docs/observability.md).
+
+### `beskar login`
+
+Authenticate to a `beskar serve` instance via SSO and store a **short-lived
+token** — the CLI never holds database credentials (PRD §6.3 E2.2). The server
+enforces role-based access (`reader`/`author`/`admin`) and tenant isolation per
+corpus (E2.3 / E2.5).
+
+```bash
+export BESKAR_ID_TOKEN="$(your-idp-helper ...)"        # an OIDC ID token from your IdP
+beskar login --server https://beskar.corp.internal     # exchanged for a short-lived token
+beskar generate --corpus runbooks --query "deploy runbook for service X?"
+```
+
+See [`docs/identity.md`](docs/identity.md) for OIDC/SAML setup, the `auth` config
+block, RBAC, and tenant namespacing.
 
 ## Enterprise hardening
 

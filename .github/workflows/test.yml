@@ -357,6 +357,128 @@ jobs:
           print(f"validated {count} audit event(s) against docs/audit-log.schema.json")
           PY
 
+      - name: Verify SSO / RBAC / tenant isolation enforced server-side (E2.2/E2.3/E2.5)
+        run: |
+          set -e
+          mkdir -p "$HOME/.config/beskar"
+          # pgport points at a closed port so any request that *passes* authz
+          # fails fast at DB connect (500) — there is no Postgres on the runner.
+          cat > "$HOME/.config/beskar/config.yaml" <<'EOF'
+          pat: LITERALPAT000000001
+          pghost: 127.0.0.1
+          pguser: u
+          pgport: "5499"
+          pgdatabase: d
+          pgpassword: LITERALPG0000000002
+          auth:
+            session_secret: test-session-secret
+            session_ttl_secs: 900
+            oidc:
+              issuer: "https://idp.test/"
+              audience: beskar
+              hs256_secret: idp-shared-secret
+              tenant_claim: tenant
+              roles_claim: groups
+              role_map:
+                beskar-admins: { role: admin }
+                kb-readers: { role: reader, corpus: kb }
+            principals:
+              - token: reader-token-aaaa
+                subject: reader-bot
+                tenant: acme
+                roles: { "*": reader }
+              - token: author-token-bbbb
+                subject: author-bot
+                tenant: acme
+                roles: { kb: author }
+              - token: scoped-token-cccc
+                subject: scoped-bot
+                tenant: acme
+                roles: { kb: reader }
+          EOF
+          chmod 600 "$HOME/.config/beskar/config.yaml"
+
+          # New CLI surface is wired.
+          ./target/debug/beskar login --help | grep -q -- '--id-token' || {
+            echo "::error::login --id-token is not wired"; exit 1; }
+          ./target/debug/beskar generate --help | grep -q -- '--corpus' || {
+            echo "::error::generate --corpus (client mode) is not wired"; exit 1; }
+
+          ./target/debug/beskar serve --addr 127.0.0.1:8730 --token admintok123 \
+            > /tmp/serve-m9.log 2>&1 &
+          SRV=$!
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8730/health 2>/dev/null; then break; fi
+            sleep 0.3
+          done
+          # Server came up => the `auth` block (principals + OIDC) compiled.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8730/health)" = 200 ] || {
+            echo "::error::serve did not start with an auth block"; cat /tmp/serve-m9.log; exit 1; }
+
+          code() { # METHOD PATH TOKEN BODY
+            if [ -n "$3" ]; then
+              curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "Authorization: Bearer $3" \
+                -H 'Content-Type: application/json' -d "$4" "http://127.0.0.1:8730$2"
+            else
+              curl -s -o /dev/null -w '%{http_code}' -X "$1" \
+                -H 'Content-Type: application/json' -d "$4" "http://127.0.0.1:8730$2"
+            fi
+          }
+          ingest='{"corpus":"kb","filename":"a.md","content":"x"}'
+          cbody='{"corpus":"kb"}'
+
+          noauth=$(code POST /v1/ingest "" "$ingest")
+          reader_ingest=$(code POST /v1/ingest reader-token-aaaa "$ingest")
+          author_ingest=$(code POST /v1/ingest author-token-bbbb "$ingest")
+          author_admin=$(code POST /v1/admin/corpus/create author-token-bbbb "$cbody")
+          admin_admin=$(code POST /v1/admin/corpus/create admintok123 "$cbody")
+          scoped_other=$(code POST /v1/query scoped-token-cccc '{"corpus":"other","query":"hi"}')
+          whoami=$(curl -s -H 'Authorization: Bearer reader-token-aaaa' http://127.0.0.1:8730/v1/whoami)
+          echo "noauth=$noauth reader_ingest=$reader_ingest author_ingest=$author_ingest author_admin=$author_admin admin_admin=$admin_admin scoped_other=$scoped_other"
+          echo "whoami=$whoami"
+
+          [ "$noauth" = 401 ]        || { echo "::error::unauthenticated request must be 401"; exit 1; }
+          # RBAC: a reader cannot ingest; an author cannot administer (E2.3).
+          [ "$reader_ingest" = 403 ] || { echo "::error::reader must not ingest"; exit 1; }
+          [ "$author_admin" = 403 ]  || { echo "::error::author must not administer a corpus"; exit 1; }
+          # Authorized actions pass RBAC and reach the (absent) DB => 500, not 403.
+          [ "$author_ingest" = 500 ] || { echo "::error::author ingest should pass RBAC (got $author_ingest)"; exit 1; }
+          [ "$admin_admin" = 500 ]   || { echo "::error::admin corpus-create should pass RBAC (got $admin_admin)"; exit 1; }
+          # Tenant/scope isolation: a principal cannot touch a corpus it has no
+          # grant on, and the tenant comes from the token, not the request (E2.5).
+          [ "$scoped_other" = 403 ]  || { echo "::error::scoped principal reached a non-granted corpus"; exit 1; }
+          echo "$whoami" | grep -q '"tenant":"acme"' || { echo "::error::/v1/whoami must report the authenticated tenant"; exit 1; }
+          echo "$whoami" | grep -q 'reader' || { echo "::error::/v1/whoami must report the role"; exit 1; }
+
+          # SSO (E2.2): mint an OIDC ID token the way an IdP would (HS256), exchange
+          # it at /v1/login for a short-lived beskar session token, and use it.
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          hdr=$(printf '%s' '{"alg":"HS256","typ":"JWT"}' | b64url)
+          pl=$(printf '%s' '{"iss":"https://idp.test/","aud":"beskar","sub":"alice","tenant":"acme","groups":["beskar-admins"],"exp":4102444800}' | b64url)
+          sig=$(printf '%s' "$hdr.$pl" | openssl dgst -sha256 -hmac 'idp-shared-secret' -binary | b64url)
+          idtoken="$hdr.$pl.$sig"
+
+          login_resp=$(curl -s -X POST -H 'Content-Type: application/json' \
+            -d "{\"id_token\":\"$idtoken\"}" http://127.0.0.1:8730/v1/login)
+          echo "login_resp=$login_resp"
+          echo "$login_resp" | grep -q '"subject":"alice"' || {
+            echo "::error::/v1/login must validate the IdP token and return the subject"; exit 1; }
+          session=$(printf '%s' "$login_resp" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          [ -n "$session" ] || { echo "::error::/v1/login did not return a session token"; exit 1; }
+          # The short-lived session token authenticates at a protected endpoint and
+          # carries the SSO-derived tenant.
+          sess_whoami=$(curl -s -H "Authorization: Bearer $session" http://127.0.0.1:8730/v1/whoami)
+          echo "sess_whoami=$sess_whoami"
+          echo "$sess_whoami" | grep -q '"tenant":"acme"' || {
+            echo "::error::SSO session token must carry the tenant"; exit 1; }
+          # A forged ID token (bad signature) is rejected at login.
+          bad_login=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -d "{\"id_token\":\"$hdr.$pl.badsig\"}" http://127.0.0.1:8730/v1/login)
+          [ "$bad_login" = 401 ] || { echo "::error::forged ID token must be 401 (got $bad_login)"; exit 1; }
+
+          kill "$SRV" 2>/dev/null || true
+          echo "--- serve-m9.log ---"; cat /tmp/serve-m9.log
+
       # Kept last: this rebuilds target/debug/beskar with FIPS enabled, which
       # fails closed on a runner that has no FIPS provider — so it must run after
       # the standard-binary smoke tests above, not before them.
