@@ -54,12 +54,6 @@ jobs:
       - name: Run unit tests with optional format features (docx, pdf)
         run: cargo test --locked --features docx,pdf --verbose
 
-      # Compile the FIPS runtime path (E1.9). The OpenSSL FIPS provider only has
-      # to be present at runtime, not to compile, so this catches build breakage
-      # in the `--features fips` code on the runner's OpenSSL 3.
-      - name: Build with FIPS feature (E1.9)
-        run: cargo build --locked --features fips --verbose
-
       - name: Smoke-test CLI parsing (--help on every subcommand)
         run: |
           ./target/debug/beskar --help
@@ -176,6 +170,26 @@ jobs:
               sys.exit(1)
           print(f"validated {count} audit event(s) against docs/audit-log.schema.json")
           PY
+
+      # Kept last: this rebuilds target/debug/beskar with FIPS enabled, which
+      # fails closed on a runner that has no FIPS provider — so it must run after
+      # the standard-binary smoke tests above, not before them.
+      - name: Build with FIPS feature (E1.9)
+        # The OpenSSL FIPS provider only has to exist at runtime, not to compile,
+        # so this catches build breakage in the `--features fips` code path.
+        run: cargo build --locked --features fips --verbose
+
+      - name: Verify a FIPS build fails closed without a provider (E1.9)
+        run: |
+          # The runner has no FIPS provider installed, so a FIPS build must
+          # report the module inactive and refuse to do real work rather than
+          # silently fall back to non-validated crypto.
+          out="$(./target/debug/beskar version)"; echo "$out"
+          echo "$out" | grep -q 'FIPS mode: inactive' || {
+            echo "::error::FIPS build should report inactive when no provider is present"; exit 1; }
+          if ./target/debug/beskar db; then
+            echo "::error::FIPS build should fail closed (non-zero) when the provider is unavailable"; exit 1
+          fi
 
   supply-chain:
     name: Supply chain (vuln + license gates)
