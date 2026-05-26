@@ -44,6 +44,11 @@ enum Commands {
         #[arg(long)]
         list: bool,
 
+        /// Check a corpus's structural integrity (row counts, vector index,
+        /// dimension consistency) and exit non-zero on failure (PRD §6.2 E1.12).
+        #[arg(long)]
+        verify: bool,
+
         #[arg(long)]
         table_name: Option<String>,
     },
@@ -120,14 +125,14 @@ fn run() -> Result<()> {
                 }
             }
         },
-        Commands::Db { create, drop, list, table_name } => {
-            if !create && !drop && !list {
+        Commands::Db { create, drop, list, verify, table_name } => {
+            if !create && !drop && !list && !verify {
                 eprintln!("No flag provided. Use --help for options.");
                 return Ok(());
             }
             let result = (|| {
                 let config = utils::load_config(globals)?;
-                database::database(create, drop, list, table_name.clone(), &config)
+                database::database(create, drop, list, verify, table_name.clone(), &config)
             })();
             audit.record_result("db", table_name.as_deref(), &result);
             result?;

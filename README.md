@@ -142,11 +142,32 @@ BESKAR_PAT=sk-... PGHOST=db.internal PGUSER=beskar PGPASSWORD=… \
 
 ### `beskar db`
 
-Manage corpus tables. Requires `--table-name` for create/drop.
+Manage corpus tables. Requires `--table-name` for create/drop/verify.
 
 - `--create --table-name X` — enable pgvector and create `X_documents` + `X_chunks`
 - `--drop --table-name X` — drop both
 - `--list` — list all tables in the public schema
+- `--verify --table-name X` — check a corpus's structural integrity and exit
+  non-zero on failure (PRD §6.2 E1.12)
+
+`--verify` reports a clear pass/fail over a corpus's tables, row counts, vector
+index, referential integrity, and embedding-dimension consistency — useful as a
+post-restore gate (see [Backup & restore](#backup--restore)):
+
+```console
+$ beskar db --verify --table-name kb
+Verifying corpus 'kb':
+  [PASS] table 'kb_documents' exists
+  [PASS] table 'kb_chunks' exists
+  [INFO] rows: 12 document(s), 480 chunk(s)
+  [PASS] vector index on chunks.embedding present
+  [PASS] every chunk references an existing document
+  [PASS] all chunks have an embedding
+  [PASS] corpus meta: model 'text-embedding-3-small', dimension 1536
+  [PASS] all embeddings have dimension 1536
+
+PASS: corpus 'kb' is structurally intact (0 warning(s)).
+```
 
 ### `beskar document`
 
@@ -345,6 +366,16 @@ than embedding unredacted text. Redaction is a best-effort control, not a
 guarantee — see the per-provider **["what leaves the machine"](docs/data-flow.md)**
 data-flow statement for exactly what egresses for each provider, and how
 redaction, `--offline`, and the egress allowlist bound it.
+
+### Backup & restore
+
+A corpus is three PostgreSQL tables (`X_documents`, `X_chunks`, `X_meta`) plus
+the pgvector index, so it backs up and restores with standard `pg_dump` /
+`pg_restore`. After a restore, run `beskar db --verify --table-name X` to confirm
+the tables, vector index, and embedding dimensions came back intact before you
+rely on the corpus (PRD §6.2 E1.12). Full procedure — selective vs. full dumps,
+the pgvector prerequisite, index rebuild, and the re-ingest alternative — is in
+[`docs/backup-restore.md`](docs/backup-restore.md).
 
 ## Supply-chain security
 

@@ -74,6 +74,7 @@ pub fn database(
     create: bool,
     drop: bool,
     list: bool,
+    verify: bool,
     table_name: Option<String>,
     config: &utils::Config,
 ) -> Result<()> {
@@ -87,6 +88,10 @@ pub fn database(
     }
     if list {
         list_tables(config)?;
+    }
+    if verify {
+        let name = table_name.as_deref().context("--table-name is required with --verify")?;
+        verify_corpus(config, name)?;
     }
     Ok(())
 }
@@ -174,6 +179,197 @@ fn list_tables(config: &utils::Config) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Tally of `db --verify` findings, printing each check as it is recorded.
+struct Report {
+    failures: u32,
+    warnings: u32,
+}
+
+impl Report {
+    fn pass(&self, msg: &str) {
+        println!("  [PASS] {msg}");
+    }
+    fn fail(&mut self, msg: &str) {
+        println!("  [FAIL] {msg}");
+        self.failures += 1;
+    }
+    fn warn(&mut self, msg: &str) {
+        println!("  [WARN] {msg}");
+        self.warnings += 1;
+    }
+    fn info(&self, msg: &str) {
+        println!("  [INFO] {msg}");
+    }
+    fn check(&mut self, ok: bool, pass_msg: &str, fail_msg: &str) {
+        if ok {
+            self.pass(pass_msg);
+        } else {
+            self.fail(fail_msg);
+        }
+    }
+}
+
+fn table_exists<C: GenericClient>(client: &mut C, name: &str) -> Result<bool> {
+    let row = client
+        .query_one(
+            "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tablename = $1",
+            &[&name],
+        )
+        .context("failed to check table existence")?;
+    let n: i64 = row.get(0);
+    Ok(n > 0)
+}
+
+fn scalar_count<C: GenericClient>(client: &mut C, sql: &str) -> Result<i64> {
+    let row = client
+        .query_one(sql, &[])
+        .with_context(|| format!("integrity query failed: {sql}"))?;
+    Ok(row.get(0))
+}
+
+/// Structural integrity check for a corpus (E1.12, §8.4). Verifies the three
+/// per-corpus tables, the vector index, referential integrity, and that every
+/// embedding matches the recorded model dimension. Prints a per-check report
+/// and returns an error (non-zero exit) if any check fails, so it gives a clear
+/// machine-readable pass/fail — e.g. as a post-restore gate.
+fn verify_corpus(config: &utils::Config, table_name: &str) -> Result<()> {
+    let mut client = connect(config)?;
+    println!("Verifying corpus '{table_name}':");
+
+    let mut r = Report { failures: 0, warnings: 0 };
+
+    let docs = format!("{table_name}_documents");
+    let chunks = format!("{table_name}_chunks");
+    let meta = format!("{table_name}_meta");
+
+    // 1. Required tables present.
+    let docs_present = table_exists(&mut client, &docs)?;
+    let chunks_present = table_exists(&mut client, &chunks)?;
+    r.check(
+        docs_present,
+        &format!("table '{docs}' exists"),
+        &format!("table '{docs}' is missing"),
+    );
+    r.check(
+        chunks_present,
+        &format!("table '{chunks}' exists"),
+        &format!("table '{chunks}' is missing"),
+    );
+
+    if docs_present && chunks_present {
+        // 2. Row counts (informational).
+        let n_docs = scalar_count(&mut client, &format!("SELECT count(*) FROM {docs}"))?;
+        let n_chunks = scalar_count(&mut client, &format!("SELECT count(*) FROM {chunks}"))?;
+        r.info(&format!("rows: {n_docs} document(s), {n_chunks} chunk(s)"));
+
+        // 3. Vector index present (any index covering chunks.embedding).
+        let idx = scalar_count(
+            &mut client,
+            &format!(
+                "SELECT count(*) FROM pg_indexes \
+                 WHERE schemaname = 'public' AND tablename = '{chunks}' \
+                 AND indexdef ILIKE '%embedding%'"
+            ),
+        )?;
+        r.check(
+            idx > 0,
+            "vector index on chunks.embedding present",
+            "no index on chunks.embedding (queries will fall back to a sequential scan)",
+        );
+
+        // 4. Referential integrity: no chunk points at a missing document.
+        let orphans = scalar_count(
+            &mut client,
+            &format!(
+                "SELECT count(*) FROM {chunks} c \
+                 LEFT JOIN {docs} d ON c.document_id = d.id WHERE d.id IS NULL"
+            ),
+        )?;
+        r.check(
+            orphans == 0,
+            "every chunk references an existing document",
+            &format!("{orphans} chunk(s) reference a missing document"),
+        );
+
+        // Documents with no chunks: legitimate for an empty source file, so warn.
+        let empty_docs = scalar_count(
+            &mut client,
+            &format!(
+                "SELECT count(*) FROM {docs} d \
+                 LEFT JOIN {chunks} c ON c.document_id = d.id WHERE c.id IS NULL"
+            ),
+        )?;
+        if empty_docs > 0 {
+            r.warn(&format!("{empty_docs} document(s) have no chunks"));
+        }
+
+        // 5. No NULL embeddings.
+        let null_emb = scalar_count(
+            &mut client,
+            &format!("SELECT count(*) FROM {chunks} WHERE embedding IS NULL"),
+        )?;
+        r.check(
+            null_emb == 0,
+            "all chunks have an embedding",
+            &format!("{null_emb} chunk(s) have a NULL embedding"),
+        );
+
+        // 6. Corpus meta + embedding-dimension consistency (E1.5).
+        if !table_exists(&mut client, &meta)? {
+            if n_chunks > 0 {
+                r.fail(&format!(
+                    "meta table '{meta}' is missing (cannot verify embedding dimension)"
+                ));
+            } else {
+                r.info(&format!("meta table '{meta}' absent (corpus not yet ingested)"));
+            }
+        } else {
+            let n_meta = scalar_count(&mut client, &format!("SELECT count(*) FROM {meta}"))?;
+            match (n_meta, read_corpus_meta(&mut client, table_name)?) {
+                (1, Some((model, dim))) => {
+                    r.pass(&format!("corpus meta: model '{model}', dimension {dim}"));
+                    let bad = scalar_count(
+                        &mut client,
+                        &format!(
+                            "SELECT count(*) FROM {chunks} \
+                             WHERE embedding IS NOT NULL AND vector_dims(embedding) <> {dim}"
+                        ),
+                    )?;
+                    r.check(
+                        bad == 0,
+                        &format!("all embeddings have dimension {dim}"),
+                        &format!("{bad} chunk(s) have an embedding dimension other than {dim}"),
+                    );
+                }
+                (0, _) if n_chunks == 0 => {
+                    r.info("corpus meta empty (corpus not yet ingested)")
+                }
+                (0, _) => r.fail(
+                    "corpus meta has no row but chunks exist (dimension guard inoperative)",
+                ),
+                (n, _) => r.fail(&format!("corpus meta has {n} rows (expected exactly 1)")),
+            }
+        }
+    } else {
+        r.info("skipping deeper checks because a core table is missing");
+    }
+
+    println!();
+    if r.failures == 0 {
+        println!(
+            "PASS: corpus '{table_name}' is structurally intact ({} warning(s)).",
+            r.warnings
+        );
+        Ok(())
+    } else {
+        bail!(
+            "FAIL: corpus '{table_name}' has {} integrity issue(s) ({} warning(s)) — see report above",
+            r.failures,
+            r.warnings
+        )
+    }
 }
 
 /// Adds the `content_sha256` column to an existing `{name}_documents` table if
