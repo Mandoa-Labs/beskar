@@ -6,15 +6,111 @@ use crate::utils::Config;
 use crate::database;
 use crate::embed;
 
+/// Text chunking parameters, in bytes.
+const CHUNK_SIZE: usize = 100;
+const OVERLAP: usize = 5;
+
+/// Outcome of ingesting one document into a corpus.
+pub struct IngestOutcome {
+    pub doc_id: i32,
+    pub chunks: usize,
+    /// Number of redaction matches scrubbed before embedding (E1.11).
+    pub redacted: usize,
+    /// A prior version of this source path was replaced.
+    pub replaced: bool,
+    /// The source was unchanged since last ingest, so nothing was re-embedded.
+    pub skipped_unchanged: bool,
+}
+
+/// Ingest one document's text into a corpus: hash for change-detection, skip if
+/// unchanged, redact (E1.11), chunk, embed, enforce the embedding
+/// model/dimension guard (E1.5), and persist atomically. This is the shared
+/// core used by both `beskar document` (per file) and `beskar serve` (per
+/// request); it performs no console output so callers control their own I/O.
+pub fn ingest_one(
+    client: &mut postgres::Client,
+    config: &Config,
+    table_name: &str,
+    filename: &str,
+    source_path: &str,
+    content: &str,
+) -> Result<IngestOutcome> {
+    database::ensure_sha256_column(client, table_name)?;
+    database::ensure_meta_table(client, table_name)?;
+    // Embedding model/dimension recorded for this corpus, if any (E1.5).
+    let corpus_meta = database::read_corpus_meta(client, table_name)?;
+
+    // Hash the source as provided, so change-detection tracks the original even
+    // when redaction would collapse two inputs to the same stored text.
+    let sha = sha256_hex(content);
+
+    let existing = database::find_document(client, table_name, source_path)?;
+    if let Some((id, Some(prev_sha))) = &existing {
+        if prev_sha == &sha {
+            return Ok(IngestOutcome {
+                doc_id: *id,
+                chunks: 0,
+                redacted: 0,
+                replaced: true,
+                skipped_unchanged: true,
+            });
+        }
+    }
+
+    // Pre-embedding redaction (E1.11): scrub configured patterns before the text
+    // is embedded, stored, or later sent to a generation provider. The redacted
+    // text is what we both store and embed, so no raw match leaves the machine.
+    let (content, redacted) = match &config.redactor {
+        Some(redactor) => redactor.redact_counted(content),
+        None => (content.to_string(), 0),
+    };
+
+    let chunks = chunk_text(&content, CHUNK_SIZE, OVERLAP);
+    let embeddings = embed::embed_chunks(config, &chunks)?;
+
+    // Embedding model/dimension guard (E1.5): on first ingest record the corpus's
+    // model + dimension; thereafter refuse a mismatched config.
+    if let Some(first) = embeddings.first() {
+        let dim = first.len() as i32;
+        match &corpus_meta {
+            Some((model, recorded_dim)) => {
+                if model != &config.embed.model || *recorded_dim != dim {
+                    bail!(
+                        "embedding mismatch for corpus '{table_name}': it was built with model \
+                         '{model}' (dim {recorded_dim}), but the current config uses model '{}' \
+                         (dim {dim}). Re-create the corpus and re-ingest, or restore the original \
+                         embedding config.",
+                        config.embed.model
+                    );
+                }
+            }
+            None => {
+                database::write_corpus_meta(client, table_name, &config.embed.model, dim)?;
+            }
+        }
+    }
+
+    let replaced = existing.is_some();
+    let mut tx = client.transaction().context("failed to begin transaction")?;
+    if let Some((existing_id, _)) = existing {
+        database::delete_document(&mut tx, table_name, existing_id)?;
+    }
+    let doc_id =
+        database::insert_document(&mut tx, table_name, filename, source_path, &content, &sha)?;
+    database::insert_chunks(&mut tx, table_name, doc_id, &chunks, &embeddings)?;
+    tx.commit().context("failed to commit ingestion transaction")?;
+
+    Ok(IngestOutcome {
+        doc_id,
+        chunks: chunks.len(),
+        redacted,
+        replaced,
+        skipped_unchanged: false,
+    })
+}
+
 pub fn document(path: &str, table_name: &str, config: &Config) -> Result<()> {
     let mut client = database::connect(config)?;
-    database::ensure_sha256_column(&mut client, table_name)?;
-    database::ensure_meta_table(&mut client, table_name)?;
-    // Embedding model/dimension recorded for this corpus, if any (E1.5).
-    let mut corpus_meta = database::read_corpus_meta(&mut client, table_name)?;
-
-    let chunk_size = 100;
-    let overlap = 5;
 
     for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
         let file_path = entry.path();
@@ -22,81 +118,30 @@ pub fn document(path: &str, table_name: &str, config: &Config) -> Result<()> {
             continue;
         }
 
-        let original = match read_document_content(file_path)? {
+        let content = match read_document_content(file_path)? {
             Some(content) => content,
             None => continue,
         };
 
         println!("Processing: {}", file_path.display());
-        // Hash the source file as it sits on disk, so change-detection tracks the
-        // original even when redaction would collapse two files to the same text.
-        let sha = sha256_hex(&original);
-
         let filename = file_path.file_name().unwrap().to_str().unwrap();
         let source_path = file_path.to_str().unwrap();
 
-        let existing = database::find_document(&mut client, table_name, source_path)?;
-        if let Some((_, Some(prev_sha))) = &existing {
-            if prev_sha == &sha {
-                println!("Unchanged, skipping: {}", file_path.display());
-                continue;
-            }
+        let outcome =
+            ingest_one(&mut client, config, table_name, filename, source_path, &content)?;
+
+        if outcome.skipped_unchanged {
+            println!("Unchanged, skipping: {}", file_path.display());
+            continue;
         }
-
-        // Pre-embedding redaction (E1.11): scrub configured PII/secret patterns
-        // before the text is embedded, stored, or later sent to a generation
-        // provider. The redacted text is what we both store and embed, so no raw
-        // match ever leaves the machine.
-        let content = match &config.redactor {
-            Some(redactor) => {
-                let (redacted, n) = redactor.redact_counted(&original);
-                if n > 0 {
-                    println!("Redacted {n} match(es) in {}", file_path.display());
-                }
-                redacted
-            }
-            None => original,
-        };
-
-        let chunks = chunk_text(&content, chunk_size, overlap);
-        println!("Created {} chunks for {}", chunks.len(), file_path.display());
-        let embeddings = embed::embed_chunks(config, &chunks)?;
-
-        // Embedding model/dimension guard (E1.5): on first ingest record the
-        // corpus's model + dimension; thereafter refuse a mismatched config.
-        if let Some(first) = embeddings.first() {
-            let dim = first.len() as i32;
-            match &corpus_meta {
-                Some((model, recorded_dim)) => {
-                    if model != &config.embed.model || *recorded_dim != dim {
-                        bail!(
-                            "embedding mismatch for corpus '{table_name}': it was built with model \
-                             '{model}' (dim {recorded_dim}), but the current config uses model '{}' \
-                             (dim {dim}). Re-create the corpus and re-ingest, or restore the original \
-                             embedding config.",
-                            config.embed.model
-                        );
-                    }
-                }
-                None => {
-                    database::write_corpus_meta(&mut client, table_name, &config.embed.model, dim)?;
-                    corpus_meta = Some((config.embed.model.clone(), dim));
-                }
-            }
+        if outcome.redacted > 0 {
+            println!("Redacted {} match(es) in {}", outcome.redacted, file_path.display());
         }
-
-        let was_existing = existing.is_some();
-        let mut tx = client.transaction().context("failed to begin transaction")?;
-        if let Some((existing_id, _)) = existing {
-            database::delete_document(&mut tx, table_name, existing_id)?;
-        }
-        let doc_id =
-            database::insert_document(&mut tx, table_name, filename, source_path, &content, &sha)?;
-        database::insert_chunks(&mut tx, table_name, doc_id, &chunks, &embeddings)?;
-        tx.commit().context("failed to commit ingestion transaction")?;
-
-        let verb = if was_existing { "Replaced" } else { "Saved" };
-        println!("{verb} '{}' (doc_id={}) with {} chunks", filename, doc_id, chunks.len());
+        let verb = if outcome.replaced { "Replaced" } else { "Saved" };
+        println!(
+            "{verb} '{}' (doc_id={}) with {} chunks",
+            filename, outcome.doc_id, outcome.chunks
+        );
     }
     Ok(())
 }

@@ -22,6 +22,10 @@ hex = "0.4"
 # E1.11). User-configured and built-in patterns are scrubbed from text before
 # it is embedded, stored, or sent to a generation provider — see src/redact/.
 regex = "1.12.3"
+# Blocking HTTP server for `beskar serve` (PRD §6.3 E2.1). Chosen so the server
+# reuses the existing blocking core (postgres + blocking reqwest) directly,
+# rather than forcing an async runtime — see src/serve/.
+tiny_http = "0.12.0"
 
 # Optional document-format extractors, enabled via the `docx` / `pdf` features.
 zip = { version = "2", optional = true }

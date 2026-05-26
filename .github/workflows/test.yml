@@ -206,6 +206,50 @@ jobs:
             echo "::error::appendix must reference both SOC 2 and NIST 800-53"; exit 1; }
           echo "control-mapping appendix covers E1.1-E1.12"
 
+      - name: Verify `beskar serve` auth + health (E2.1)
+        run: |
+          # No PostgreSQL on the runner, so this exercises serving, the
+          # fail-closed-without-a-token guard, and bearer auth on the /health and
+          # 401 paths (which don't touch the DB). Ingest/query against a real DB
+          # are documented in docs/server.md.
+          mkdir -p "$HOME/.config/beskar"
+          cat > "$HOME/.config/beskar/config.yaml" <<'EOF'
+          pat: LITERALPAT000000001
+          pghost: localhost
+          pguser: u
+          pgport: "5432"
+          pgdatabase: d
+          pgpassword: LITERALPG0000000002
+          EOF
+          chmod 600 "$HOME/.config/beskar/config.yaml"
+
+          # 1. Fails closed when no token is configured (errors before binding).
+          set +e
+          out="$(./target/debug/beskar serve --addr 127.0.0.1:8724 2>&1)"; code=$?
+          set -e
+          echo "$out"
+          [ "$code" -ne 0 ] || { echo "::error::serve without a token should exit non-zero"; exit 1; }
+          echo "$out" | grep -q 'requires an API token' || {
+            echo "::error::expected an API-token-required message"; exit 1; }
+
+          # 2. With a token, it serves /health and enforces bearer auth.
+          ./target/debug/beskar serve --addr 127.0.0.1:8724 --token testtoken123 \
+            > /tmp/serve.log 2>&1 &
+          SRV=$!
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8724/health 2>/dev/null; then break; fi
+            sleep 0.3
+          done
+          health=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8724/health)
+          noauth=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8724/v1/query -d '{}')
+          wrong=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer nope' -X POST http://127.0.0.1:8724/v1/query -d '{}')
+          kill "$SRV" 2>/dev/null || true
+          echo "--- serve.log ---"; cat /tmp/serve.log
+          echo "health=$health noauth=$noauth wrong=$wrong"
+          [ "$health" = 200 ] || { echo "::error::/health should be 200"; exit 1; }
+          [ "$noauth" = 401 ] || { echo "::error::unauthenticated query should be 401"; exit 1; }
+          [ "$wrong"  = 401 ] || { echo "::error::wrong-token query should be 401"; exit 1; }
+
       - name: Verify audit log emits one redacted, schema-valid event (E1.8)
         run: |
           mkdir -p "$HOME/.config/beskar"

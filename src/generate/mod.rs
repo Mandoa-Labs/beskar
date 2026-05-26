@@ -38,11 +38,74 @@ pub fn generate(
         return Ok(());
     }
 
+    let (query, chunks) = retrieve(config, &query, table_name, top_k)?;
+
+    if chunks.is_empty() {
+        eprintln!("No chunks found in '{}_chunks'. Has the corpus been ingested?", table_name);
+        return Ok(());
+    }
+
+    let messages = build_messages(&query, &chunks);
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    run_completion(&config.generate, &config.http, &messages, &mut out)?;
+
+    print_citations(&chunks);
+    Ok(())
+}
+
+/// An answer produced for the server API (E2.1): the generated text and the
+/// chunks it cited.
+pub struct Answer {
+    pub answer: String,
+    pub sources: Vec<(String, i32)>,
+    /// Set when no answer was generated (e.g. the corpus has no matching chunks).
+    pub note: Option<String>,
+}
+
+/// Non-streaming generation, used by `beskar serve`. Runs the same retrieval and
+/// completion path as the CLI but collects the response into a string instead of
+/// streaming it to stdout.
+pub fn answer(config: &Config, query: &str, table_name: &str, top_k: usize) -> Result<Answer> {
+    let (query, chunks) = retrieve(config, query, table_name, top_k)?;
+    let sources = chunks
+        .iter()
+        .map(|c| (c.filename.clone(), c.chunk_index))
+        .collect();
+
+    if chunks.is_empty() {
+        return Ok(Answer {
+            answer: String::new(),
+            sources,
+            note: Some(format!(
+                "no matching chunks in '{table_name}_chunks'; has the corpus been ingested?"
+            )),
+        });
+    }
+
+    let messages = build_messages(&query, &chunks);
+    let mut buf: Vec<u8> = Vec::new();
+    run_completion(&config.generate, &config.http, &messages, &mut buf)?;
+    let answer = String::from_utf8_lossy(&buf).trim().to_string();
+
+    Ok(Answer { answer, sources, note: None })
+}
+
+/// Embed the (redacted) query, enforce the model/dimension guard (E1.5), and
+/// retrieve the top-k chunks (also redacted, E1.11). Shared by `generate` and
+/// `answer`; returns the redacted query alongside the chunks.
+fn retrieve(
+    config: &Config,
+    query: &str,
+    table_name: &str,
+    top_k: usize,
+) -> Result<(String, Vec<RetrievedChunk>)> {
     // Pre-embedding redaction (E1.11): scrub the query before it is embedded for
     // retrieval or echoed back to the generation provider.
     let query = match &config.redactor {
-        Some(r) => r.redact(&query),
-        None => query,
+        Some(r) => r.redact(query),
+        None => query.to_string(),
     };
 
     let query_embedding = embed::embed_one(config, &query)?;
@@ -66,11 +129,6 @@ pub fn generate(
 
     let mut chunks = database::query_chunks(&mut client, table_name, &query_embedding, top_k)?;
 
-    if chunks.is_empty() {
-        eprintln!("No chunks found in '{}_chunks'. Has the corpus been ingested?", table_name);
-        return Ok(());
-    }
-
     // Defense in depth: also redact retrieved context, so a corpus ingested
     // before redaction was enabled still can't leak PII to the generation
     // provider (E1.11).
@@ -80,17 +138,26 @@ pub fn generate(
         }
     }
 
-    let messages = build_messages(&query, &chunks);
+    Ok((query, chunks))
+}
 
-    let endpoint = &config.generate;
+/// Dispatch a completion to the configured generation provider, writing the
+/// streamed tokens to `out` (stdout for the CLI, an in-memory buffer for the
+/// server).
+fn run_completion(
+    endpoint: &Endpoint,
+    http: &HttpClient,
+    messages: &[Message],
+    out: &mut dyn Write,
+) -> Result<()> {
     match endpoint.provider.as_str() {
-        "openai" | "openai-compatible" => stream_openai(endpoint, &config.http, &messages)?,
-        "azure-openai" => stream_azure_openai(endpoint, &config.http, &messages)?,
+        "openai" | "openai-compatible" => stream_openai(endpoint, http, messages, out),
+        "azure-openai" => stream_azure_openai(endpoint, http, messages, out),
         "anthropic" => {
             if endpoint.api_key.is_empty() {
                 bail!("provider=anthropic but no key; set `anthropic_key` or `generate.api_key`");
             }
-            stream_anthropic(endpoint, &config.http, &messages)?;
+            stream_anthropic(endpoint, http, messages, out)
         }
         "bedrock" => bail!(
             "bedrock generation is not yet implemented; use provider \
@@ -98,9 +165,6 @@ pub fn generate(
         ),
         other => bail!("Unknown provider '{other}'."),
     }
-
-    print_citations(&chunks);
-    Ok(())
 }
 
 fn openai_messages(messages: &[Message]) -> Vec<serde_json::Value> {
@@ -110,7 +174,12 @@ fn openai_messages(messages: &[Message]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn stream_openai(endpoint: &Endpoint, http: &HttpClient, messages: &[Message]) -> Result<()> {
+fn stream_openai(
+    endpoint: &Endpoint,
+    http: &HttpClient,
+    messages: &[Message],
+    out: &mut dyn Write,
+) -> Result<()> {
     let url = format!("{}/chat/completions", endpoint.base_url);
     let body = serde_json::json!({
         "model": endpoint.model,
@@ -123,10 +192,15 @@ fn stream_openai(endpoint: &Endpoint, http: &HttpClient, messages: &[Message]) -
         .json(&body)
         .send()
         .with_context(|| format!("failed to call chat API at {url}"))?;
-    read_openai_stream(resp)
+    read_openai_stream(resp, out)
 }
 
-fn stream_azure_openai(endpoint: &Endpoint, http: &HttpClient, messages: &[Message]) -> Result<()> {
+fn stream_azure_openai(
+    endpoint: &Endpoint,
+    http: &HttpClient,
+    messages: &[Message],
+    out: &mut dyn Write,
+) -> Result<()> {
     let deployment = endpoint
         .deployment
         .as_deref()
@@ -149,11 +223,12 @@ fn stream_azure_openai(endpoint: &Endpoint, http: &HttpClient, messages: &[Messa
         .json(&body)
         .send()
         .with_context(|| format!("failed to call Azure OpenAI chat API at {url}"))?;
-    read_openai_stream(resp)
+    read_openai_stream(resp, out)
 }
 
-/// Parse an OpenAI-style server-sent-event stream of `chat/completions` deltas.
-fn read_openai_stream(resp: reqwest::blocking::Response) -> Result<()> {
+/// Parse an OpenAI-style server-sent-event stream of `chat/completions` deltas,
+/// writing assistant tokens to `out`.
+fn read_openai_stream(resp: reqwest::blocking::Response, out: &mut dyn Write) -> Result<()> {
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().unwrap_or_default();
@@ -161,8 +236,6 @@ fn read_openai_stream(resp: reqwest::blocking::Response) -> Result<()> {
     }
 
     let reader = BufReader::new(resp);
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
@@ -188,7 +261,12 @@ fn read_openai_stream(resp: reqwest::blocking::Response) -> Result<()> {
     Ok(())
 }
 
-fn stream_anthropic(endpoint: &Endpoint, http: &HttpClient, messages: &[Message]) -> Result<()> {
+fn stream_anthropic(
+    endpoint: &Endpoint,
+    http: &HttpClient,
+    messages: &[Message],
+    out: &mut dyn Write,
+) -> Result<()> {
     let system = messages
         .iter()
         .find(|m| m.role == "system")
@@ -226,8 +304,6 @@ fn stream_anthropic(endpoint: &Endpoint, http: &HttpClient, messages: &[Message]
     }
 
     let reader = BufReader::new(resp);
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,

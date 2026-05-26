@@ -10,6 +10,7 @@ mod embed;
 mod net;
 mod redact;
 mod secrets;
+mod serve;
 mod utils;
 
 /// Main CLI application
@@ -69,6 +70,8 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         top_k: usize,
     },
+    /// Serve ingest + query over an authenticated HTTP API, reusing the CLI core (PRD §6.3 E2.1).
+    Serve(serve::ServeArgs),
     /// Print the version and whether FIPS-validated crypto is active (PRD §6.2 E1.9).
     Version,
 }
@@ -151,6 +154,14 @@ fn run() -> Result<()> {
                 generate::generate(query.as_deref(), &table_name, top_k, &config)
             })();
             audit.record_result("generate", Some(table_name.as_str()), &result);
+            result?;
+        }
+        Commands::Serve(args) => {
+            let result = (|| {
+                let config = utils::load_config(globals)?;
+                serve::serve(&args, &config)
+            })();
+            audit.record_result("serve", None, &result);
             result?;
         }
     }
