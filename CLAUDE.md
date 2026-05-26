@@ -21,6 +21,7 @@ cargo fmt             # Format code
 - `src/document/` — `beskar document --path <PATH>` command, walks directories for .md/.txt files, chunks text with overlap
 - `src/generate/` — `beskar generate` command
 - `src/serve/` — `beskar serve` command (E2.1): authenticated HTTP API (tiny_http, blocking) exposing ingest + query, reusing the CLI core (`document::ingest_one`, `generate::answer`)
+- `src/policy/` — Central admin policy (E2.6): allowed providers/endpoints, `require_redaction`, retention window; enforced per-request server-side by `serve` (denied → HTTP 403)
 - `src/redact/` — Pre-embedding PII/secret redaction hooks (E1.11): built-in presets + custom regex patterns, applied before text is embedded, stored, or sent to a generation provider
 - `src/utils/` — Shared utilities, config reading (`read_config()`)
 

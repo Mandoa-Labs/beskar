@@ -8,6 +8,7 @@ mod generate;
 mod database;
 mod embed;
 mod net;
+mod policy;
 mod redact;
 mod secrets;
 mod serve;

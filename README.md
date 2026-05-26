@@ -231,8 +231,11 @@ curl -s http://127.0.0.1:8080/v1/query \
   -d '{"table_name":"kb","query":"...","top_k":5}'
 ```
 
-Endpoints: `GET /health`, `POST /v1/ingest`, `POST /v1/query`. Full reference —
-auth, request/response shapes, error codes — is in [`docs/server.md`](docs/server.md).
+Endpoints: `GET /health`, `POST /v1/ingest`, `POST /v1/query`, `GET /v1/policy`.
+Admins can set a central `policy` (allowed providers/endpoints, `require_redaction`,
+retention window) that the server enforces for **every caller** — a denied
+provider/endpoint returns `403` (PRD §6.3 E2.6). Full reference — auth,
+request/response shapes, error codes, policy — is in [`docs/server.md`](docs/server.md).
 
 ## Enterprise hardening
 
@@ -471,6 +474,7 @@ cargo fmt             # Format code
 - `src/secrets/` — Pluggable secret backends (`scheme://` references) + redaction
 - `src/redact/` — Pre-embedding PII/secret redaction hooks (built-in presets + custom patterns)
 - `src/serve/` — `serve` HTTP API (tiny_http) reusing the ingest/query core, bearer-auth
+- `src/policy/` — Central admin policy (allowed providers/endpoints, redaction, retention) enforced by `serve`
 - `src/fips/` — FIPS 140-3 runtime mode (OpenSSL provider activation, validated SHA-256)
 - `src/utils/` — Config parsing, secret resolution, and `config lint`
 - `terraform/` — Azure PostgreSQL Flexible Server with pgvector allowlisted
