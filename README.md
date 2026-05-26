@@ -237,6 +237,22 @@ retention window) that the server enforces for **every caller** — a denied
 provider/endpoint returns `403` (PRD §6.3 E2.6). Full reference — auth,
 request/response shapes, error codes, policy — is in [`docs/server.md`](docs/server.md).
 
+### `beskar login`
+
+Authenticate to a `beskar serve` instance via SSO and store a **short-lived
+token** — the CLI never holds database credentials (PRD §6.3 E2.2). The server
+enforces role-based access (`reader`/`author`/`admin`) and tenant isolation per
+corpus (E2.3 / E2.5).
+
+```bash
+export BESKAR_ID_TOKEN="$(your-idp-helper ...)"        # an OIDC ID token from your IdP
+beskar login --server https://beskar.corp.internal     # exchanged for a short-lived token
+beskar generate --corpus runbooks --query "deploy runbook for service X?"
+```
+
+See [`docs/identity.md`](docs/identity.md) for OIDC/SAML setup, the `auth` config
+block, RBAC, and tenant namespacing.
+
 ## Enterprise hardening
 
 These controls (PRD §6.2 E1.1–E1.10) make beskar safe to run in regulated and

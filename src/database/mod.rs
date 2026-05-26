@@ -96,6 +96,18 @@ pub fn database(
     Ok(())
 }
 
+/// Create a corpus's tables for the `beskar serve` admin API (E2.3). Thin
+/// wrapper over the CLI's `--create` path so the server and CLI share one code
+/// path; `table_name` is the (already tenant-namespaced) physical prefix.
+pub fn create_corpus(config: &utils::Config, table_name: &str) -> Result<()> {
+    create_tables(config, table_name)
+}
+
+/// Drop a corpus's tables for the `beskar serve` admin API (E2.3).
+pub fn drop_corpus(config: &utils::Config, table_name: &str) -> Result<()> {
+    drop_tables(config, table_name)
+}
+
 fn create_tables(config: &utils::Config, table_name: &str) -> Result<()> {
     let mut client = connect(config)?;
 

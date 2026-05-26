@@ -133,11 +133,38 @@ impl Logger {
         }
     }
 
+    /// Like [`Logger::record_result`], but attributes the event to an explicit
+    /// `actor` (e.g. the authenticated identity behind a `beskar serve` request,
+    /// PRD §5.6) instead of the local OS user. `None` falls back to the OS user.
+    pub fn record_result_as<T>(
+        &self,
+        command: &str,
+        actor_override: Option<&str>,
+        target: Option<&str>,
+        result: &anyhow::Result<T>,
+    ) {
+        match result {
+            Ok(_) => self.emit(command, actor_override, target, Outcome::Success, None),
+            Err(e) => self.emit(command, actor_override, target, Outcome::Failure, Some(&format!("{e:#}"))),
+        }
+    }
+
     /// Emit one event. Never fails the command: serialization or sink errors are
     /// reported to stderr and otherwise swallowed.
     pub fn record(
         &self,
         command: &str,
+        target: Option<&str>,
+        outcome: Outcome,
+        error: Option<&str>,
+    ) {
+        self.emit(command, None, target, outcome, error);
+    }
+
+    fn emit(
+        &self,
+        command: &str,
+        actor_override: Option<&str>,
         target: Option<&str>,
         outcome: Outcome,
         error: Option<&str>,
@@ -148,7 +175,7 @@ impl Logger {
         let event = Event {
             schema_version: SCHEMA_VERSION,
             timestamp: now_rfc3339(),
-            actor: actor(),
+            actor: actor_override.map(str::to_string).unwrap_or_else(actor),
             host: host(),
             pid: std::process::id(),
             command,

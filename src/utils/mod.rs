@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::identity::{Auth, AuthConfig};
 use crate::net::{self, EgressArgs, EgressPolicy, HttpClient};
 use crate::policy::{Policy, PolicyConfig};
 use crate::redact::{RedactionConfig, Redactor};
@@ -110,6 +111,10 @@ pub struct RawConfig {
     // Central admin policy enforced by `beskar serve` (E2.6).
     #[serde(default)]
     pub policy: PolicyConfig,
+
+    // Identity & access: SSO/principals/RBAC/tenancy, enforced by `serve` (E2.2/E2.3/E2.5).
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +159,9 @@ pub struct Config {
     pub redactor: Option<Redactor>,
     /// Central admin policy enforced by `beskar serve` (E2.6).
     pub policy: Policy,
+    /// Resolved identity & access config, enforced by `beskar serve`
+    /// (E2.2/E2.3/E2.5). Empty unless an `auth` block is configured.
+    pub auth: Auth,
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +268,10 @@ impl Config {
         // 6. Central admin policy (E2.6), enforced by `beskar serve`.
         let policy = Policy::from_config(&raw.policy);
 
+        // 7. Identity & access (E2.2/E2.3/E2.5). Resolves principal/SSO secrets
+        //    via the same resolver, registering them for redaction.
+        let auth = Auth::from_config(&raw.auth, &resolve).context("invalid `auth` config")?;
+
         Ok(Config {
             pghost: raw.pghost.clone(),
             pguser: raw.pguser.clone(),
@@ -272,6 +284,7 @@ impl Config {
             http,
             redactor,
             policy,
+            auth,
         })
     }
 
@@ -295,6 +308,7 @@ impl Config {
             None => eprintln!("  redaction: disabled"),
         }
         eprintln!("  policy: {}", self.policy.summary());
+        eprintln!("  auth: {}", self.auth.summary());
     }
 }
 
@@ -479,6 +493,20 @@ pub fn lint() -> Result<bool> {
                  `beskar serve` will refuse to start"
             );
             issues += 1;
+        }
+    }
+
+    // Identity & access (E2.2/E2.3/E2.5): validate the `auth` block compiles
+    // (roles, identifiers, exactly-one OIDC key) so a bad grant is caught here
+    // rather than at server startup. Secrets are not resolved during lint, so a
+    // no-op resolver is used (token validity is checked only at `serve` time).
+    if raw.auth.oidc.is_some() || !raw.auth.principals.is_empty() {
+        match Auth::from_config(&raw.auth, &|v| Ok(v.to_string())) {
+            Ok(auth) => println!("  [auth] {}", auth.summary()),
+            Err(e) => {
+                println!("  [auth] {e:#}");
+                issues += 1;
+            }
         }
     }
 
