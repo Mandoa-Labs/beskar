@@ -222,6 +222,12 @@ impl Principal {
         }
     }
 
+    /// `true` for the operator's super-admin (the shared serve token). Used to
+    /// gate non-tenant-scoped, operator-only surfaces such as SCIM provisioning.
+    pub fn is_superadmin(&self) -> bool {
+        self.superadmin
+    }
+
     /// Check that this principal may perform `action` on `corpus`. Returns a
     /// caller-safe reason on denial.
     pub fn authorize(&self, corpus: &str, action: Action) -> Result<(), String> {

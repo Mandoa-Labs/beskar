@@ -248,8 +248,8 @@ fn host() -> String {
 
 /// Format the current UTC time as RFC 3339 with millisecond precision, e.g.
 /// `2026-05-25T12:34:56.789Z`. Implemented without a date dependency: see
-/// [`civil_from_days`].
-fn now_rfc3339() -> String {
+/// [`civil_from_days`]. Shared with `scim` for SCIM resource `meta` timestamps.
+pub(crate) fn now_rfc3339() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let dur = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -54,6 +54,28 @@ pub struct EndpointConfig {
     pub region: Option<String>,
 }
 
+/// SCIM provisioning (PRD §6.3 E2.4). Off by default; when enabled, `beskar
+/// serve` mounts the SCIM 2.0 `/scim/v2/*` endpoints backed by Postgres.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct ScimConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Server observability (PRD §6.3 E2.7 · §8.5). `/metrics` and health/readiness
+/// are always on for `beskar serve`; OTel trace export is opt-in via an OTLP
+/// endpoint (config or the standard `OTEL_EXPORTER_OTLP_*` env vars).
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct ObservabilityConfig {
+    /// OTLP/HTTP traces endpoint. May be a base (`http://collector:4318`, the
+    /// `/v1/traces` path is appended) or a full traces URL. Empty disables export.
+    #[serde(default)]
+    pub otlp_endpoint: Option<String>,
+    /// `service.name` reported in the OTel resource (default `beskar-serve`).
+    #[serde(default)]
+    pub service_name: Option<String>,
+}
+
 /// Egress controls (PRD §6.2 E1.6). CLI flags override these.
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct EgressConfig {
@@ -115,6 +137,14 @@ pub struct RawConfig {
     // Identity & access: SSO/principals/RBAC/tenancy, enforced by `serve` (E2.2/E2.3/E2.5).
     #[serde(default)]
     pub auth: AuthConfig,
+
+    // SCIM provisioning, served by `beskar serve` (E2.4).
+    #[serde(default)]
+    pub scim: ScimConfig,
+
+    // Server observability: metrics / traces / health (E2.7).
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +192,10 @@ pub struct Config {
     /// Resolved identity & access config, enforced by `beskar serve`
     /// (E2.2/E2.3/E2.5). Empty unless an `auth` block is configured.
     pub auth: Auth,
+    /// SCIM provisioning settings, served by `beskar serve` (E2.4).
+    pub scim: ScimConfig,
+    /// Server observability settings (E2.7).
+    pub observability: ObservabilityConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +319,9 @@ impl Config {
             redactor,
             policy,
             auth,
+            // Platform-ops settings consumed by `beskar serve` (E2.4 / E2.7).
+            scim: raw.scim.clone(),
+            observability: raw.observability.clone(),
         })
     }
 
@@ -309,6 +346,11 @@ impl Config {
         }
         eprintln!("  policy: {}", self.policy.summary());
         eprintln!("  auth: {}", self.auth.summary());
+        eprintln!("  scim: enabled={}", self.scim.enabled);
+        match self.observability.otlp_endpoint.as_deref().filter(|s| !s.trim().is_empty()) {
+            Some(ep) => eprintln!("  observability: otlp_endpoint={ep}"),
+            None => eprintln!("  observability: otlp_endpoint=(unset)"),
+        }
     }
 }
 
@@ -508,6 +550,14 @@ pub fn lint() -> Result<bool> {
                 issues += 1;
             }
         }
+    }
+
+    // SCIM provisioning (E2.4) and observability (E2.7), reported for visibility.
+    if raw.scim.enabled {
+        println!("  [scim] provisioning enabled (served at /scim/v2/* by `beskar serve`)");
+    }
+    if let Some(ep) = raw.observability.otlp_endpoint.as_deref().filter(|s| !s.trim().is_empty()) {
+        println!("  [observability] OTLP trace export -> {ep}");
     }
 
     if issues == 0 {
