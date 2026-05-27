@@ -46,6 +46,7 @@ header to the provider that owns them.
 | `openai` | `https://api.openai.com/v1/embeddings` (or `embed.base_url`) | model + chunk text | `Authorization: Bearer` |
 | `openai-compatible` | your `embed.base_url` (e.g. a self-hosted model) | model + chunk text | `Authorization: Bearer` |
 | `azure-openai` | `{base_url}/openai/deployments/{deployment}/embeddings` | chunk text | `api-key` header |
+| `ollama` | `{ollama_host}/api/embed` (default `http://127.0.0.1:11434`) | model + chunk text | none — self-hosted |
 | `bedrock` | — | not implemented (errors out) | — |
 
 ### Generation providers (`generate` completion)
@@ -55,10 +56,18 @@ header to the provider that owns them.
 | `openai` / `openai-compatible` | `{base_url}/chat/completions` | model + system prompt + query + retrieved context | `Authorization: Bearer` |
 | `azure-openai` | `{base_url}/openai/deployments/{deployment}/chat/completions` | system prompt + query + retrieved context | `api-key` header |
 | `anthropic` | `{base_url}/messages` (default `https://api.anthropic.com/v1`) | model + system prompt + query + retrieved context | `x-api-key` header |
+| `ollama` | `{ollama_host}/api/chat` (default `http://127.0.0.1:11434`) | model + system prompt + query + retrieved context | none — self-hosted |
 | `bedrock` | — | not implemented (errors out) | — |
 
 Responses are streamed back over the same TLS connection and written to stdout;
 nothing is sent anywhere else.
+
+> **Ollama keeps data on infrastructure you control.** When `embed`/`generate`
+> use the `ollama` provider, the chunk text, query, and retrieved context go only
+> to **your** Ollama host (local, on another machine via `OLLAMA_HOST`, or
+> air-gapped) — never to a public vendor. Combined with `--offline`, this lets a
+> sensitive corpus be built and queried with no third-party egress at all. See
+> [ollama.md](ollama.md).
 
 ## What never leaves
 

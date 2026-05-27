@@ -70,17 +70,24 @@ pub fn connect(config: &utils::Config) -> Result<Client> {
     pg.connect(connector).context("failed to connect to PostgreSQL")
 }
 
+/// Default embedding vector dimension (OpenAI `text-embedding-3-small`). Used for
+/// the corpus `embedding` column when no `--dim` is given and the dimension can't
+/// be probed from the embedder.
+const DEFAULT_EMBED_DIM: i32 = 1536;
+
 pub fn database(
     create: bool,
     drop: bool,
     list: bool,
     verify: bool,
+    dim: Option<i32>,
     table_name: Option<String>,
     config: &utils::Config,
 ) -> Result<()> {
     if create {
         let name = table_name.as_deref().context("--table-name is required with --create")?;
-        create_tables(config, name)?;
+        let dim = resolve_embed_dim(dim, config)?;
+        create_tables(config, name, dim)?;
     }
     if drop {
         let name = table_name.as_deref().context("--table-name is required with --drop")?;
@@ -100,7 +107,10 @@ pub fn database(
 /// wrapper over the CLI's `--create` path so the server and CLI share one code
 /// path; `table_name` is the (already tenant-namespaced) physical prefix.
 pub fn create_corpus(config: &utils::Config, table_name: &str) -> Result<()> {
-    create_tables(config, table_name)
+    // No `--dim` over the server API: resolve from the embedder (probed for
+    // Ollama, default otherwise), matching the CLI's `--create` path.
+    let dim = resolve_embed_dim(None, config)?;
+    create_tables(config, table_name, dim)
 }
 
 /// Drop a corpus's tables for the `beskar serve` admin API (E2.3).
@@ -108,7 +118,31 @@ pub fn drop_corpus(config: &utils::Config, table_name: &str) -> Result<()> {
     drop_tables(config, table_name)
 }
 
-fn create_tables(config: &utils::Config, table_name: &str) -> Result<()> {
+/// Resolve the embedding dimension for a new corpus: an explicit `--dim` wins;
+/// otherwise an Ollama embedder is probed (its vector length varies by model,
+/// e.g. 768 for `nomic-embed-text`), and everything else defaults to
+/// [`DEFAULT_EMBED_DIM`] (OpenAI, unchanged). Pass `--dim` for any other
+/// non-1536 embedder.
+fn resolve_embed_dim(flag: Option<i32>, config: &utils::Config) -> Result<i32> {
+    if let Some(d) = flag {
+        if d <= 0 {
+            bail!("--dim must be a positive integer (got {d})");
+        }
+        return Ok(d);
+    }
+    if config.embed.provider == "ollama" {
+        let probe = crate::embed::embed_one(config, "beskar dimension probe").context(
+            "could not probe the Ollama embedding dimension; ensure the model is pulled and the \
+             host is reachable, or pass --dim <N>",
+        )?;
+        let dim = probe.len() as i32;
+        println!("Probed Ollama embedding dimension: {dim} (model '{}').", config.embed.model);
+        return Ok(dim);
+    }
+    Ok(DEFAULT_EMBED_DIM)
+}
+
+fn create_tables(config: &utils::Config, table_name: &str, dim: i32) -> Result<()> {
     let mut client = connect(config)?;
 
     client.execute("CREATE EXTENSION IF NOT EXISTS vector", &[])
@@ -134,7 +168,7 @@ fn create_tables(config: &utils::Config, table_name: &str) -> Result<()> {
             document_id INTEGER NOT NULL REFERENCES {table_name}_documents(id) ON DELETE CASCADE,
             chunk_index INTEGER NOT NULL,
             content TEXT NOT NULL,
-            embedding VECTOR(1536),
+            embedding VECTOR({dim}),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )"
     );

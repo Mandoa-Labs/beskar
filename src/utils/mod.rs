@@ -91,11 +91,19 @@ pub struct EgressConfig {
 /// written before M5 deserialize unchanged.
 #[derive(Debug, Deserialize, Default)]
 pub struct RawConfig {
+    /// OpenAI API key used for embeddings (and OpenAI generation) by default.
+    /// Optional: an Ollama-only config needs no OpenAI key (PRD §6.2 E1.4).
+    #[serde(default)]
     pub pat: String,
     #[serde(default)]
     pub provider: Option<String>,
     #[serde(default)]
     pub anthropic_key: Option<String>,
+    /// Ollama host base URL shared by `ollama` embed/generate endpoints when they
+    /// don't set their own `base_url`. Falls back to `OLLAMA_HOST` then
+    /// `http://127.0.0.1:11434` (OL.1).
+    #[serde(default)]
+    pub ollama_host: Option<String>,
     pub pghost: String,
     pub pguser: String,
     pub pgport: String,
@@ -240,6 +248,16 @@ impl Config {
                 allow_hosts.push(h);
             }
         }
+        // The Ollama host is resolved from config/env (and often defaulted), so
+        // it has no literal `base_url` above; auto-allow it whenever either
+        // endpoint uses the `ollama` provider so `--offline` reaches a
+        // self-hosted Ollama (PRD §6.2 E1.6, OL.1).
+        let ollama_host = crate::ollama::resolve_host(raw.ollama_host.as_deref());
+        if uses_ollama(raw) {
+            if let Some(h) = net::host_of(&ollama_host) {
+                allow_hosts.push(h);
+            }
+        }
         for value in secret_fields(raw) {
             if let Some(host) = keyvault_host(value) {
                 allow_hosts.push(host);
@@ -276,11 +294,13 @@ impl Config {
             _ => None,
         };
 
-        // 3. Endpoints (E1.4).
-        let embed = resolve_embed_endpoint(&raw.embed, &pat, &resolve)?;
+        // 3. Endpoints (E1.4). `ollama_host` resolved in step 1 is the base URL
+        //    for any `ollama` endpoint that doesn't set its own `base_url`.
+        let embed = resolve_embed_endpoint(&raw.embed, &ollama_host, &pat, &resolve)?;
         let generate = resolve_generate_endpoint(
             &raw.generate,
             raw.provider.as_deref(),
+            &ollama_host,
             &pat,
             anthropic_key.as_deref(),
             &resolve,
@@ -405,24 +425,47 @@ fn warn_on_plaintext_secrets(raw: &RawConfig, path: &PathBuf) {
     }
 }
 
+/// `true` if either endpoint resolves to the `ollama` provider, accounting for
+/// the top-level `provider` fallback that `generate` honors.
+fn uses_ollama(raw: &RawConfig) -> bool {
+    let embed = raw.embed.provider.as_deref().unwrap_or("openai");
+    let generate = raw
+        .generate
+        .provider
+        .as_deref()
+        .or(raw.provider.as_deref())
+        .unwrap_or("openai");
+    embed == "ollama" || generate == "ollama"
+}
+
 fn resolve_embed_endpoint(
     cfg: &EndpointConfig,
+    ollama_host: &str,
     pat: &str,
     resolve: &impl Fn(&str) -> Result<String>,
 ) -> Result<Endpoint> {
     let provider = cfg.provider.clone().unwrap_or_else(|| "openai".to_string());
+    let is_ollama = provider == "ollama";
     let api_key = match cfg.api_key.as_deref() {
         Some(k) if !k.is_empty() => resolve(k)?,
+        // Ollama needs no API key; don't fall back to the OpenAI `pat`.
+        _ if is_ollama => String::new(),
         _ => pat.to_string(),
     };
-    let base_url = cfg
-        .base_url
-        .clone()
-        .unwrap_or_else(|| DEFAULT_OPENAI_BASE.to_string());
-    let model = cfg
-        .model
-        .clone()
-        .unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
+    let base_url = cfg.base_url.clone().unwrap_or_else(|| {
+        if is_ollama {
+            ollama_host.to_string()
+        } else {
+            DEFAULT_OPENAI_BASE.to_string()
+        }
+    });
+    let model = cfg.model.clone().unwrap_or_else(|| {
+        if is_ollama {
+            crate::ollama::DEFAULT_EMBED_MODEL.to_string()
+        } else {
+            DEFAULT_EMBED_MODEL.to_string()
+        }
+    });
     Ok(Endpoint {
         provider,
         base_url: trim_base(&base_url),
@@ -437,6 +480,7 @@ fn resolve_embed_endpoint(
 fn resolve_generate_endpoint(
     cfg: &EndpointConfig,
     top_provider: Option<&str>,
+    ollama_host: &str,
     pat: &str,
     anthropic_key: Option<&str>,
     resolve: &impl Fn(&str) -> Result<String>,
@@ -450,15 +494,19 @@ fn resolve_generate_endpoint(
     let api_key = match cfg.api_key.as_deref() {
         Some(k) if !k.is_empty() => resolve(k)?,
         _ if provider == "anthropic" => anthropic_key.unwrap_or("").to_string(),
+        // Ollama needs no API key; don't fall back to the OpenAI `pat`.
+        _ if provider == "ollama" => String::new(),
         _ => pat.to_string(),
     };
 
     let base_url = cfg.base_url.clone().unwrap_or_else(|| match provider.as_str() {
         "anthropic" => DEFAULT_ANTHROPIC_BASE.to_string(),
+        "ollama" => ollama_host.to_string(),
         _ => DEFAULT_OPENAI_BASE.to_string(),
     });
     let model = cfg.model.clone().unwrap_or_else(|| match provider.as_str() {
         "anthropic" => DEFAULT_ANTHROPIC_GEN_MODEL.to_string(),
+        "ollama" => crate::ollama::DEFAULT_GEN_MODEL.to_string(),
         _ => DEFAULT_OPENAI_GEN_MODEL.to_string(),
     });
 
@@ -603,9 +651,11 @@ mod tests {
         Ok(v.to_string())
     }
 
+    const OLLAMA: &str = "http://127.0.0.1:11434";
+
     #[test]
     fn embed_endpoint_defaults_to_openai_with_pat() {
-        let ep = resolve_embed_endpoint(&endpoint_cfg(), "sk-pat", &noop_resolve).unwrap();
+        let ep = resolve_embed_endpoint(&endpoint_cfg(), OLLAMA, "sk-pat", &noop_resolve).unwrap();
         assert_eq!(ep.provider, "openai");
         assert_eq!(ep.base_url, "https://api.openai.com/v1");
         assert_eq!(ep.model, "text-embedding-3-small");
@@ -621,7 +671,7 @@ mod tests {
             api_key: Some("local-key".into()),
             ..Default::default()
         };
-        let ep = resolve_embed_endpoint(&cfg, "sk-pat", &noop_resolve).unwrap();
+        let ep = resolve_embed_endpoint(&cfg, OLLAMA, "sk-pat", &noop_resolve).unwrap();
         assert_eq!(ep.provider, "openai-compatible");
         assert_eq!(ep.base_url, "https://llm.internal/v1"); // trailing slash trimmed
         assert_eq!(ep.model, "bge-small");
@@ -629,10 +679,22 @@ mod tests {
     }
 
     #[test]
+    fn embed_endpoint_ollama_uses_host_and_default_model_without_pat() {
+        let cfg = EndpointConfig { provider: Some("ollama".into()), ..Default::default() };
+        let ep = resolve_embed_endpoint(&cfg, OLLAMA, "sk-pat", &noop_resolve).unwrap();
+        assert_eq!(ep.provider, "ollama");
+        assert_eq!(ep.base_url, OLLAMA);
+        assert_eq!(ep.model, "nomic-embed-text");
+        // Ollama needs no key; the OpenAI `pat` is not leaked into it.
+        assert_eq!(ep.api_key, "");
+    }
+
+    #[test]
     fn generate_endpoint_anthropic_uses_anthropic_key() {
         let ep = resolve_generate_endpoint(
             &endpoint_cfg(),
             Some("anthropic"),
+            OLLAMA,
             "sk-pat",
             Some("sk-ant"),
             &noop_resolve,
@@ -646,11 +708,33 @@ mod tests {
 
     #[test]
     fn generate_endpoint_defaults_to_openai() {
-        let ep =
-            resolve_generate_endpoint(&endpoint_cfg(), None, "sk-pat", None, &noop_resolve).unwrap();
+        let ep = resolve_generate_endpoint(&endpoint_cfg(), None, OLLAMA, "sk-pat", None, &noop_resolve)
+            .unwrap();
         assert_eq!(ep.provider, "openai");
         assert_eq!(ep.api_key, "sk-pat");
         assert_eq!(ep.model, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn generate_endpoint_ollama_via_top_provider_uses_host_and_default_model() {
+        // `provider: ollama` at the top level selects Ollama for generation.
+        let ep = resolve_generate_endpoint(&endpoint_cfg(), Some("ollama"), OLLAMA, "sk-pat", None, &noop_resolve)
+            .unwrap();
+        assert_eq!(ep.provider, "ollama");
+        assert_eq!(ep.base_url, OLLAMA);
+        assert_eq!(ep.model, "llama3.1");
+        assert_eq!(ep.api_key, "");
+    }
+
+    #[test]
+    fn uses_ollama_detects_either_endpoint() {
+        let mut raw = RawConfig::default();
+        assert!(!uses_ollama(&raw));
+        raw.provider = Some("ollama".into()); // top-level generate provider
+        assert!(uses_ollama(&raw));
+        raw.provider = None;
+        raw.embed.provider = Some("ollama".into());
+        assert!(uses_ollama(&raw));
     }
 
     #[test]

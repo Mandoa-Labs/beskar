@@ -159,6 +159,15 @@ fn run_completion(
             }
             stream_anthropic(endpoint, http, messages, out)
         }
+        "ollama" => {
+            // Self-hosted generation (PRD §6.2 E1.4); newline-delimited JSON
+            // stream with its own preflight (OL.3/OL.4).
+            let pairs: Vec<(String, String)> = messages
+                .iter()
+                .map(|m| (m.role.clone(), m.content.clone()))
+                .collect();
+            crate::ollama::stream_chat(http, &endpoint.base_url, &endpoint.model, &pairs, out)
+        }
         "bedrock" => bail!(
             "bedrock generation is not yet implemented; use provider \
              'openai', 'openai-compatible', 'azure-openai', or 'anthropic'"

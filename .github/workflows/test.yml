@@ -479,6 +479,53 @@ jobs:
           kill "$SRV" 2>/dev/null || true
           echo "--- serve-m9.log ---"; cat /tmp/serve-m9.log
 
+      - name: Verify Ollama provider wiring — unattended init, egress auto-allow, preflight (OL.1/OL.4)
+        run: |
+          set -e
+          mkdir -p "$HOME/.config/beskar"
+          cfg="$HOME/.config/beskar/config.yaml"
+
+          # 1. `beskar init` writes a complete Ollama config with zero prompts from
+          #    flags/env, and needs no OpenAI key when both sides use Ollama (E1.10).
+          rm -f "$cfg"
+          BESKAR_EMBED_PROVIDER=ollama BESKAR_PROVIDER=ollama \
+          OLLAMA_HOST=http://ollama.internal:11434 \
+          PGHOST=db.internal PGUSER=beskar PGPASSWORD=pw \
+            ./target/debug/beskar init --non-interactive
+          echo "--- written config ---"; cat "$cfg"
+          grep -q '^provider: ollama'                          "$cfg" || { echo "::error::init did not set provider: ollama"; exit 1; }
+          grep -q '^ollama_host: http://ollama.internal:11434' "$cfg" || { echo "::error::init did not record ollama_host"; exit 1; }
+          grep -q '^  provider: ollama'                        "$cfg" || { echo "::error::init did not write the embed ollama block"; exit 1; }
+          if grep -q '^pat:' "$cfg"; then echo "::error::an Ollama-only init must not write an OpenAI pat"; exit 1; fi
+
+          # 2. Egress auto-allow (OL.1) + preflight (OL.4): with a local Ollama host
+          #    and --offline, the request is NOT blocked by the allowlist (the host
+          #    is auto-added); it fails instead with a clear "could not reach Ollama"
+          #    preflight error, since nothing is listening on the runner.
+          cat > "$cfg" <<'EOF'
+          provider: ollama
+          embed:
+            provider: ollama
+          ollama_host: http://127.0.0.1:11434
+          pghost: localhost
+          pguser: u
+          pgport: "5432"
+          pgdatabase: d
+          pgpassword: env://PGPASSWORD
+          EOF
+          chmod 600 "$cfg"
+          export PGPASSWORD=whatever
+          set +e
+          out="$(./target/debug/beskar generate --query hi --table-name t --offline 2>&1)"; code=$?
+          set -e
+          echo "--- generate output ---"; echo "$out"
+          [ "$code" -ne 0 ] || { echo "::error::generate against an absent Ollama should fail"; exit 1; }
+          echo "$out" | grep -q 'could not reach Ollama' || {
+            echo "::error::expected a clear Ollama-unreachable preflight error"; exit 1; }
+          if echo "$out" | grep -q 'offline mode: refusing connection'; then
+            echo "::error::--offline blocked the auto-allowed Ollama host (egress auto-allow regressed)"; exit 1
+          fi
+
       # Kept last: this rebuilds target/debug/beskar with FIPS enabled, which
       # fails closed on a runner that has no FIPS provider — so it must run after
       # the standard-binary smoke tests above, not before them.

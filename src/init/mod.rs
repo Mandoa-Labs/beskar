@@ -11,14 +11,28 @@ use anyhow::{bail, Context, Result};
 #[derive(clap::Args, Debug, Default)]
 pub struct InitArgs {
     /// OpenAI API key used for embeddings (env: BESKAR_PAT, OPENAI_API_KEY).
+    /// Not required when embeddings and generation both use Ollama.
     #[arg(long)]
     pub pat: Option<String>,
-    /// `generate` provider: openai | anthropic (env: BESKAR_PROVIDER; default openai).
+    /// `generate` provider: openai | anthropic | ollama (env: BESKAR_PROVIDER; default openai).
     #[arg(long)]
     pub provider: Option<String>,
     /// Anthropic API key, required only when provider=anthropic (env: BESKAR_ANTHROPIC_KEY, ANTHROPIC_API_KEY).
     #[arg(long)]
     pub anthropic_key: Option<String>,
+    /// `embed` provider: openai | ollama (env: BESKAR_EMBED_PROVIDER; default openai).
+    #[arg(long)]
+    pub embed_provider: Option<String>,
+    /// Ollama host base URL, used when embed/generate provider is ollama
+    /// (env: BESKAR_OLLAMA_HOST, OLLAMA_HOST; default http://127.0.0.1:11434).
+    #[arg(long)]
+    pub ollama_host: Option<String>,
+    /// Embedding model override (env: BESKAR_EMBED_MODEL; e.g. nomic-embed-text for ollama).
+    #[arg(long)]
+    pub embed_model: Option<String>,
+    /// Generation model override (env: BESKAR_GENERATE_MODEL; e.g. llama3.1 for ollama).
+    #[arg(long)]
+    pub generate_model: Option<String>,
     /// Postgres host (env: PGHOST).
     #[arg(long)]
     pub pghost: Option<String>,
@@ -99,24 +113,54 @@ fn user_input(prompt: &str) -> String {
 
     _s
 }
-fn build_yaml(
-    pat: &str,
-    provider: &str,
-    anthropic_key: &str,
-    pghost: &str,
-    pguser: &str,
-    pgport: &str,
-    pgdatabase: &str,
-    pgpassword: &str,
-) -> String {
-    let mut out = format!(
-        r#"pat: {}
-provider: {}
-"#,
-        pat, provider
-    );
-    if !anthropic_key.is_empty() {
-        out.push_str(&format!("anthropic_key: {}\n", anthropic_key));
+/// Everything `beskar init` resolves before writing `config.yaml`.
+#[derive(Default)]
+struct ConfigInput {
+    pat: String,
+    /// `generate` provider (top-level `provider:`).
+    provider: String,
+    anthropic_key: String,
+    /// `embed` provider; only written as an `embed:` block when not the default.
+    embed_provider: String,
+    /// Ollama host; only written when an endpoint uses ollama.
+    ollama_host: String,
+    embed_model: String,
+    generate_model: String,
+    pghost: String,
+    pguser: String,
+    pgport: String,
+    pgdatabase: String,
+    pgpassword: String,
+}
+
+fn build_yaml(c: &ConfigInput) -> String {
+    let mut out = String::new();
+    // `pat` is optional now (an Ollama-only config needs no OpenAI key); omit the
+    // key entirely when empty so it deserializes via serde's default.
+    if !c.pat.is_empty() {
+        out.push_str(&format!("pat: {}\n", c.pat));
+    }
+    out.push_str(&format!("provider: {}\n", c.provider));
+    if !c.anthropic_key.is_empty() {
+        out.push_str(&format!("anthropic_key: {}\n", c.anthropic_key));
+    }
+    if !c.ollama_host.is_empty() {
+        out.push_str(&format!("ollama_host: {}\n", c.ollama_host));
+    }
+    // Emit an `embed:` block when the embed provider isn't the default, or a
+    // model override is given.
+    if c.embed_provider != "openai" || !c.embed_model.is_empty() {
+        out.push_str("embed:\n");
+        out.push_str(&format!("  provider: {}\n", c.embed_provider));
+        if !c.embed_model.is_empty() {
+            out.push_str(&format!("  model: {}\n", c.embed_model));
+        }
+    }
+    // The generation provider is set top-level; only emit a `generate:` block for
+    // a model override.
+    if !c.generate_model.is_empty() {
+        out.push_str("generate:\n");
+        out.push_str(&format!("  model: {}\n", c.generate_model));
     }
     out.push_str(&format!(
         r#"pghost: {}
@@ -125,7 +169,7 @@ pgport: {}
 pgdatabase: {}
 pgpassword: {}
 "#,
-        pghost, pguser, pgport, pgdatabase, pgpassword
+        c.pghost, c.pguser, c.pgport, c.pgdatabase, c.pgpassword
     ));
     out
 }
@@ -183,10 +227,23 @@ fn optional(
 
 pub fn init(args: &InitArgs) -> Result<()> {
     let ni = args.non_interactive;
-    let pat = required(&args.pat, &["BESKAR_PAT", "OPENAI_API_KEY"],
-        "PAT (OpenAI key, used for embeddings)", ni)?;
     let provider = optional(&args.provider, &["BESKAR_PROVIDER"],
-        "PROVIDER for `generate` (openai | anthropic, default openai)", "openai", ni);
+        "PROVIDER for `generate` (openai | anthropic | ollama, default openai)", "openai", ni);
+    let embed_provider = optional(&args.embed_provider, &["BESKAR_EMBED_PROVIDER"],
+        "EMBED provider (openai | ollama, default openai)", "openai", ni);
+
+    // The OpenAI `pat` is only needed when embeddings or generation actually use
+    // an OpenAI key. With Ollama on both sides, skip it entirely (OL.1).
+    let needs_pat = embed_provider != "ollama" || provider == "openai";
+    let pat = if needs_pat {
+        required(&args.pat, &["BESKAR_PAT", "OPENAI_API_KEY"],
+            "PAT (OpenAI key, used for embeddings)", ni)?
+    } else {
+        from_env(&["BESKAR_PAT", "OPENAI_API_KEY"])
+            .or_else(|| args.pat.clone().filter(|s| !s.is_empty()))
+            .unwrap_or_default()
+    };
+
     let anthropic_key = if provider == "anthropic" {
         required(&args.anthropic_key, &["BESKAR_ANTHROPIC_KEY", "ANTHROPIC_API_KEY"],
             "ANTHROPIC_KEY", ni)?
@@ -196,6 +253,24 @@ pub fn init(args: &InitArgs) -> Result<()> {
             .or_else(|| args.anthropic_key.clone().filter(|s| !s.is_empty()))
             .unwrap_or_default()
     };
+
+    // Ollama host + model overrides, only relevant (and prompted for) when an
+    // endpoint uses ollama.
+    let uses_ollama = embed_provider == "ollama" || provider == "ollama";
+    let ollama_host = if uses_ollama {
+        optional(&args.ollama_host, &["BESKAR_OLLAMA_HOST", "OLLAMA_HOST"],
+            "OLLAMA_HOST (default http://127.0.0.1:11434)", "http://127.0.0.1:11434", ni)
+    } else {
+        String::new()
+    };
+    // Model overrides are always optional; never prompt for them (env/flag only).
+    let embed_model = args.embed_model.clone().filter(|s| !s.is_empty())
+        .or_else(|| from_env(&["BESKAR_EMBED_MODEL"]))
+        .unwrap_or_default();
+    let generate_model = args.generate_model.clone().filter(|s| !s.is_empty())
+        .or_else(|| from_env(&["BESKAR_GENERATE_MODEL"]))
+        .unwrap_or_default();
+
     let pghost = required(&args.pghost, &["PGHOST"], "PGHOST", ni)?;
     let pguser = required(&args.pguser, &["PGUSER"], "PGUSER", ni)?;
     let pgport = optional(&args.pgport, &["PGPORT"], "PGPORT (default 5432)", "5432", ni);
@@ -203,7 +278,10 @@ pub fn init(args: &InitArgs) -> Result<()> {
         "PGDATABASE (default postgres)", "postgres", ni);
     let pgpassword = required(&args.pgpassword, &["PGPASSWORD"], "PGPASSWORD", ni)?;
 
-    let yaml = build_yaml(&pat, &provider, &anthropic_key, &pghost, &pguser, &pgport, &pgdatabase, &pgpassword);
+    let yaml = build_yaml(&ConfigInput {
+        pat, provider, anthropic_key, embed_provider, ollama_host,
+        embed_model, generate_model, pghost, pguser, pgport, pgdatabase, pgpassword,
+    });
     write(&yaml).context("failed to write config")?;
     println!("Wrote config to {}/config.yaml", config_dir());
     Ok(())
@@ -241,12 +319,29 @@ mod tests {
         assert_eq!(r, "req");
     }
 
+    fn base_input() -> ConfigInput {
+        ConfigInput {
+            pat: "test_pat".into(),
+            provider: "openai".into(),
+            embed_provider: "openai".into(),
+            pghost: "localhost".into(),
+            pguser: "user".into(),
+            pgport: "5432".into(),
+            pgdatabase: "testdb".into(),
+            pgpassword: "pass".into(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn test_build_yaml() {
-        let yaml = build_yaml("test_pat", "openai", "", "localhost", "user", "5432", "testdb", "pass");
+        let yaml = build_yaml(&base_input());
         assert!(yaml.contains("pat: test_pat"));
         assert!(yaml.contains("provider: openai"));
         assert!(!yaml.contains("anthropic_key"));
+        // Default openai embed provider with no override emits no embed block.
+        assert!(!yaml.contains("embed:"));
+        assert!(!yaml.contains("ollama_host"));
         assert!(yaml.contains("pghost: localhost"));
         assert!(yaml.contains("pguser: user"));
         assert!(yaml.contains("pgport: 5432"));
@@ -256,14 +351,53 @@ mod tests {
 
     #[test]
     fn test_build_yaml_with_anthropic_key() {
-        let yaml = build_yaml("test_pat", "anthropic", "sk-ant-xxx", "localhost", "user", "5432", "testdb", "pass");
+        let yaml = build_yaml(&ConfigInput {
+            provider: "anthropic".into(),
+            anthropic_key: "sk-ant-xxx".into(),
+            ..base_input()
+        });
         assert!(yaml.contains("provider: anthropic"));
         assert!(yaml.contains("anthropic_key: sk-ant-xxx"));
     }
 
     #[test]
+    fn test_build_yaml_ollama_omits_pat_and_writes_blocks() {
+        let yaml = build_yaml(&ConfigInput {
+            pat: String::new(),
+            provider: "ollama".into(),
+            embed_provider: "ollama".into(),
+            ollama_host: "http://ollama.internal:11434".into(),
+            ..base_input()
+        });
+        // No OpenAI key for an Ollama-only config.
+        assert!(!yaml.contains("pat:"));
+        assert!(yaml.contains("provider: ollama"));
+        assert!(yaml.contains("ollama_host: http://ollama.internal:11434"));
+        assert!(yaml.contains("embed:\n  provider: ollama"));
+    }
+
+    #[test]
+    fn test_build_yaml_writes_model_overrides() {
+        let yaml = build_yaml(&ConfigInput {
+            embed_provider: "ollama".into(),
+            embed_model: "nomic-embed-text".into(),
+            generate_model: "llama3.1".into(),
+            ..base_input()
+        });
+        assert!(yaml.contains("embed:\n  provider: ollama\n  model: nomic-embed-text"));
+        assert!(yaml.contains("generate:\n  model: llama3.1"));
+    }
+
+    #[test]
     fn test_write_and_read_config() {
-        let yaml = build_yaml("my_pat", "openai", "", "myhost", "myuser", "5432", "mydb", "mypass");
+        let yaml = build_yaml(&ConfigInput {
+            pat: "my_pat".into(),
+            pghost: "myhost".into(),
+            pguser: "myuser".into(),
+            pgdatabase: "mydb".into(),
+            pgpassword: "mypass".into(),
+            ..base_input()
+        });
         write(&yaml).expect("Failed to write config");
 
         let dir = config_dir();
