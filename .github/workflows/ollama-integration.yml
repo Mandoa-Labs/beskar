@@ -153,8 +153,12 @@ jobs:
           PGHOST=127.0.0.1 PGPORT=5432 PGUSER=beskar PGDATABASE=beskar PGPASSWORD=beskar \
             ./target/debug/beskar init --non-interactive
           printf 'pgsslmode: disable\n' >> "$HOME/.config/beskar/config.yaml"
+          # A *new* document, so ingestion actually embeds (an unchanged file is
+          # skipped before embedding by the change-detection hash).
+          mkdir -p corpus-missing
+          echo "A fresh note that forces a fresh embedding call." > corpus-missing/new.md
           set +e
-          out="$(./target/debug/beskar document --path corpus --table-name kb 2>&1)"; code=$?
+          out="$(./target/debug/beskar document --path corpus-missing --table-name kb 2>&1)"; code=$?
           set -e
           echo "$out"
           [ "$code" -ne 0 ] || { echo "::error::a missing embed model should fail"; exit 1; }
