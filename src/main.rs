@@ -11,6 +11,7 @@ mod identity;
 mod login;
 mod net;
 mod observability;
+mod ollama;
 mod policy;
 mod redact;
 mod scim;
@@ -54,6 +55,11 @@ enum Commands {
         /// dimension consistency) and exit non-zero on failure (PRD §6.2 E1.12).
         #[arg(long)]
         verify: bool,
+
+        /// Embedding vector dimension for `--create` (default 1536). Omit for an
+        /// Ollama embedder and it is probed from the model automatically.
+        #[arg(long)]
+        dim: Option<i32>,
 
         #[arg(long)]
         table_name: Option<String>,
@@ -145,14 +151,14 @@ fn run() -> Result<()> {
                 }
             }
         },
-        Commands::Db { create, drop, list, verify, table_name } => {
+        Commands::Db { create, drop, list, verify, dim, table_name } => {
             if !create && !drop && !list && !verify {
                 eprintln!("No flag provided. Use --help for options.");
                 return Ok(());
             }
             let result = (|| {
                 let config = utils::load_config(globals)?;
-                database::database(create, drop, list, verify, table_name.clone(), &config)
+                database::database(create, drop, list, verify, dim, table_name.clone(), &config)
             })();
             audit.record_result("db", table_name.as_deref(), &result);
             result?;

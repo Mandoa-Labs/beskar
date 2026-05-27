@@ -27,7 +27,7 @@ Beskar is a Rust CLI for building and querying a local RAG (Retrieval-Augmented 
 ## Prerequisites
 
 - **PostgreSQL with [pgvector](https://github.com/pgvector/pgvector).** Any pgvector-capable instance works; `beskar db --create` enables the `vector` extension and creates the corpus tables. The included [`terraform/`](terraform/) provisions an Azure PostgreSQL Flexible Server with pgvector allowlisted.
-- **An OpenAI API key** for embeddings (`text-embedding-3-small`), and for generation when `provider=openai`. An **Anthropic key** is needed instead for generation when `provider=anthropic`.
+- **An OpenAI API key** for embeddings (`text-embedding-3-small`), and for generation when `provider=openai`. An **Anthropic key** is needed instead for generation when `provider=anthropic`. Or run **[Ollama](docs/ollama.md)** for self-hosted embeddings and/or generation — no vendor key required, and corpus text stays on infrastructure you control.
 - **To build from source:** a stable [Rust toolchain](https://rustup.rs/) (2021 edition).
 - **To install a pre-built release:** the [GitHub CLI](https://cli.github.com/) (`gh`).
 
@@ -117,9 +117,11 @@ beskar generate --query "what is X?" --table-name notes
 
 Prompts for and writes config to `~/.config/beskar/config.yaml` (mode `0600` on unix):
 
-- `pat` — OpenAI API key (used for embeddings)
-- `provider` — LLM provider for `generate`: `openai` (default) or `anthropic`
+- `pat` — OpenAI API key (used for embeddings); not required when both embed and generate use Ollama
+- `provider` — LLM provider for `generate`: `openai` (default), `anthropic`, or `ollama`
 - `anthropic_key` — required only when `provider=anthropic`
+- `embed_provider` — embedding provider: `openai` (default) or `ollama`
+- `ollama_host` — Ollama base URL, used when a provider is `ollama` (default `http://127.0.0.1:11434`) — see [Ollama](docs/ollama.md)
 - Postgres connection fields (`pghost`, `pguser`, `pgport`, `pgdatabase`, `pgpassword`)
 
 **Non-interactive / unattended.** Every prompt also has a flag and an env var,
@@ -128,8 +130,11 @@ resolved as **flag → env → prompt** (PRD §6.2 E1.10):
 | Field | Flag | Env |
 | --- | --- | --- |
 | OpenAI key | `--pat` | `BESKAR_PAT`, `OPENAI_API_KEY` |
-| Provider | `--provider` | `BESKAR_PROVIDER` |
+| Provider (`generate`) | `--provider` | `BESKAR_PROVIDER` |
 | Anthropic key | `--anthropic-key` | `BESKAR_ANTHROPIC_KEY`, `ANTHROPIC_API_KEY` |
+| Embed provider | `--embed-provider` | `BESKAR_EMBED_PROVIDER` |
+| Ollama host | `--ollama-host` | `BESKAR_OLLAMA_HOST`, `OLLAMA_HOST` |
+| Model overrides | `--embed-model`, `--generate-model` | `BESKAR_EMBED_MODEL`, `BESKAR_GENERATE_MODEL` |
 | Postgres | `--pghost` … `--pgpassword` | `PGHOST`, `PGUSER`, `PGPORT`, `PGDATABASE`, `PGPASSWORD` |
 
 Pass `--non-interactive` to never prompt: a missing required value becomes a
@@ -150,6 +155,10 @@ Manage corpus tables. Requires `--table-name` for create/drop/verify.
 - `--list` — list all tables in the public schema
 - `--verify --table-name X` — check a corpus's structural integrity and exit
   non-zero on failure (PRD §6.2 E1.12)
+- `--dim N` — the embedding vector dimension for `--create` (default `1536`,
+  OpenAI `text-embedding-3-small`). For an Ollama embedder it is **probed from
+  the model automatically** (e.g. `768` for `nomic-embed-text`); pass `--dim`
+  explicitly for any other embedder whose dimension isn't `1536`.
 
 `--verify` reports a clear pass/fail over a corpus's tables, row counts, vector
 index, referential integrity, and embedding-dimension consistency — useful as a
@@ -307,8 +316,8 @@ errors and `--verbose` output.
 ### Private model endpoints
 
 The embedding and generation endpoints are configured independently and support
-`openai`, `openai-compatible` (any `base_url`), `azure-openai`, and `anthropic`
-(`bedrock` is stubbed):
+`openai`, `openai-compatible` (any `base_url`), `azure-openai`, `anthropic`, and
+`ollama` (`bedrock` is stubbed):
 
 ```yaml
 embed:
@@ -325,6 +334,21 @@ generate:
 ```
 
 When unset, both default to OpenAI using `pat`.
+
+**Ollama** is a first-class provider for self-hosted embeddings and generation,
+with a configurable host (local, remote, or air-gapped). The host is auto-added
+to the egress allowlist so `--offline` works against it, and no vendor key is
+needed. See **[`docs/ollama.md`](docs/ollama.md)**:
+
+```yaml
+provider: ollama                 # generation via Ollama
+ollama_host: http://127.0.0.1:11434
+embed:
+  provider: ollama               # embeddings via Ollama
+  model: nomic-embed-text
+generate:
+  model: llama3.1
+```
 
 ### Embedding model/dimension guard
 
@@ -496,8 +520,9 @@ cargo fmt             # Format code
 - `src/init/` — `init` command (config prompts + write)
 - `src/database/` — Postgres client, table management, insert/query helpers
 - `src/document/` — `document` ingestion (walk, chunk, embed, persist)
-- `src/embed/` — Shared OpenAI embedding helpers used by ingestion + query
+- `src/embed/` — Shared embedding helpers (OpenAI / Azure / Ollama) used by ingestion + query
 - `src/generate/` — `generate` command (retrieve → compose → stream)
+- `src/ollama/` — Ollama provider: host resolution, model preflight, `/api/embed` + `/api/chat` (see [`docs/ollama.md`](docs/ollama.md))
 - `src/net/` — Outbound HTTP client + egress policy (proxy / CA bundle / allowlist / `--offline`)
 - `src/secrets/` — Pluggable secret backends (`scheme://` references) + redaction
 - `src/redact/` — Pre-embedding PII/secret redaction hooks (built-in presets + custom patterns)

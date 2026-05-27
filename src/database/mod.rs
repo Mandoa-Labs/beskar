@@ -70,17 +70,24 @@ pub fn connect(config: &utils::Config) -> Result<Client> {
     pg.connect(connector).context("failed to connect to PostgreSQL")
 }
 
+/// Default embedding vector dimension (OpenAI `text-embedding-3-small`). Used for
+/// the corpus `embedding` column when no `--dim` is given and the dimension can't
+/// be probed from the embedder.
+const DEFAULT_EMBED_DIM: i32 = 1536;
+
 pub fn database(
     create: bool,
     drop: bool,
     list: bool,
     verify: bool,
+    dim: Option<i32>,
     table_name: Option<String>,
     config: &utils::Config,
 ) -> Result<()> {
     if create {
         let name = table_name.as_deref().context("--table-name is required with --create")?;
-        create_tables(config, name)?;
+        let dim = resolve_embed_dim(dim, config)?;
+        create_tables(config, name, dim)?;
     }
     if drop {
         let name = table_name.as_deref().context("--table-name is required with --drop")?;
@@ -100,7 +107,10 @@ pub fn database(
 /// wrapper over the CLI's `--create` path so the server and CLI share one code
 /// path; `table_name` is the (already tenant-namespaced) physical prefix.
 pub fn create_corpus(config: &utils::Config, table_name: &str) -> Result<()> {
-    create_tables(config, table_name)
+    // No `--dim` over the server API: resolve from the embedder (probed for
+    // Ollama, default otherwise), matching the CLI's `--create` path.
+    let dim = resolve_embed_dim(None, config)?;
+    create_tables(config, table_name, dim)
 }
 
 /// Drop a corpus's tables for the `beskar serve` admin API (E2.3).
@@ -108,7 +118,31 @@ pub fn drop_corpus(config: &utils::Config, table_name: &str) -> Result<()> {
     drop_tables(config, table_name)
 }
 
-fn create_tables(config: &utils::Config, table_name: &str) -> Result<()> {
+/// Resolve the embedding dimension for a new corpus: an explicit `--dim` wins;
+/// otherwise an Ollama embedder is probed (its vector length varies by model,
+/// e.g. 768 for `nomic-embed-text`), and everything else defaults to
+/// [`DEFAULT_EMBED_DIM`] (OpenAI, unchanged). Pass `--dim` for any other
+/// non-1536 embedder.
+fn resolve_embed_dim(flag: Option<i32>, config: &utils::Config) -> Result<i32> {
+    if let Some(d) = flag {
+        if d <= 0 {
+            bail!("--dim must be a positive integer (got {d})");
+        }
+        return Ok(d);
+    }
+    if config.embed.provider == "ollama" {
+        let probe = crate::embed::embed_one(config, "beskar dimension probe").context(
+            "could not probe the Ollama embedding dimension; ensure the model is pulled and the \
+             host is reachable, or pass --dim <N>",
+        )?;
+        let dim = probe.len() as i32;
+        println!("Probed Ollama embedding dimension: {dim} (model '{}').", config.embed.model);
+        return Ok(dim);
+    }
+    Ok(DEFAULT_EMBED_DIM)
+}
+
+fn create_tables(config: &utils::Config, table_name: &str, dim: i32) -> Result<()> {
     let mut client = connect(config)?;
 
     client.execute("CREATE EXTENSION IF NOT EXISTS vector", &[])
@@ -134,7 +168,7 @@ fn create_tables(config: &utils::Config, table_name: &str) -> Result<()> {
             document_id INTEGER NOT NULL REFERENCES {table_name}_documents(id) ON DELETE CASCADE,
             chunk_index INTEGER NOT NULL,
             content TEXT NOT NULL,
-            embedding VECTOR(1536),
+            embedding VECTOR({dim}),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )"
     );
@@ -489,31 +523,44 @@ pub struct RetrievedChunk {
     pub content: String,
 }
 
+/// Format an embedding as a pgvector text literal `[v1,v2,...]`. Rust's `f32`
+/// `Display` never emits exponential notation, so the output is only digits,
+/// `.`, `-`, and `,` — safe to inline directly into SQL.
+fn vector_literal(embedding: &[f32]) -> String {
+    let mut s = String::with_capacity(embedding.len() * 8 + 2);
+    s.push('[');
+    for (i, v) in embedding.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&v.to_string());
+    }
+    s.push(']');
+    s
+}
+
 pub fn query_chunks<C: GenericClient>(
     client: &mut C,
     table_name: &str,
     embedding: &[f32],
     k: usize,
 ) -> Result<Vec<RetrievedChunk>> {
-    let embedding_str = format!(
-        "[{}]",
-        embedding
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    );
+    // Inline the query vector as a `'[..]'::vector` literal rather than a bound
+    // parameter: an untyped `$n::vector` parameter makes the driver infer the
+    // `vector` type, which a Rust `String` cannot serialize to. The values are
+    // plain finite numbers, so there is no injection surface.
+    let embedding_literal = vector_literal(embedding);
 
     let query = format!(
         "SELECT d.filename, c.chunk_index, c.content \
          FROM {table_name}_chunks c \
          JOIN {table_name}_documents d ON c.document_id = d.id \
-         ORDER BY c.embedding <=> $1::vector \
-         LIMIT $2"
+         ORDER BY c.embedding <=> '{embedding_literal}'::vector \
+         LIMIT $1"
     );
 
     let rows = client
-        .query(&query[..], &[&embedding_str, &(k as i64)])
+        .query(&query[..], &[&(k as i64)])
         .context("failed to query chunks")?;
 
     Ok(rows.iter()
@@ -543,12 +590,18 @@ pub fn insert_chunks<C: GenericClient>(
         let batch_end = std::cmp::min(batch_start + BATCH_SIZE, chunks.len());
         let batch_len = batch_end - batch_start;
 
+        // Bind document_id / chunk_index / content as parameters; inline each
+        // embedding as a `'[..]'::vector` literal. An untyped `$n::vector`
+        // parameter makes the driver infer the `vector` type, which a Rust
+        // `String` cannot serialize to — and the embedding is plain finite
+        // numbers, so inlining has no injection surface.
         let mut placeholders = Vec::with_capacity(batch_len);
         for i in 0..batch_len {
-            let base = i * 4;
+            let base = i * 3;
+            let embedding_literal = vector_literal(&embeddings[batch_start + i]);
             placeholders.push(format!(
-                "(${}, ${}, ${}, ${}::vector)",
-                base + 1, base + 2, base + 3, base + 4
+                "(${}, ${}, ${}, '{embedding_literal}'::vector)",
+                base + 1, base + 2, base + 3
             ));
         }
         let values_sql = placeholders.join(", ");
@@ -556,25 +609,15 @@ pub fn insert_chunks<C: GenericClient>(
             "INSERT INTO {table_name}_chunks (document_id, chunk_index, content, embedding) VALUES {values_sql}"
         );
 
-        let embedding_strs: Vec<String> = embeddings[batch_start..batch_end]
-            .iter()
-            .map(|e| {
-                format!(
-                    "[{}]",
-                    e.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
-                )
-            })
-            .collect();
         let chunk_indices: Vec<i32> = (batch_start..batch_end).map(|i| i as i32).collect();
         let doc_ids: Vec<i32> = std::iter::repeat(document_id).take(batch_len).collect();
 
         let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> =
-            Vec::with_capacity(batch_len * 4);
+            Vec::with_capacity(batch_len * 3);
         for i in 0..batch_len {
             params.push(&doc_ids[i]);
             params.push(&chunk_indices[i]);
             params.push(&chunks[batch_start + i]);
-            params.push(&embedding_strs[i]);
         }
 
         client
@@ -584,4 +627,29 @@ pub fn insert_chunks<C: GenericClient>(
 
     println!("Inserted {} chunks for document_id={}", chunks.len(), document_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::vector_literal;
+
+    #[test]
+    fn vector_literal_is_bracketed_csv_without_exponent() {
+        let lit = vector_literal(&[1.0, -0.5, 0.25]);
+        assert_eq!(lit, "[1,-0.5,0.25]");
+    }
+
+    #[test]
+    fn vector_literal_never_uses_scientific_notation() {
+        // Rust's f32 Display renders decimals, not `1e-7`, so the literal stays
+        // parseable by pgvector and free of injection-relevant characters.
+        let lit = vector_literal(&[0.0000001, 123456.0]);
+        assert!(!lit.contains('e') && !lit.contains('E'), "unexpected exponent in {lit}");
+        assert!(lit.starts_with('[') && lit.ends_with(']'));
+    }
+
+    #[test]
+    fn vector_literal_handles_empty() {
+        assert_eq!(vector_literal(&[]), "[]");
+    }
 }

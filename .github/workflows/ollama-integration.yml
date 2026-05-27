@@ -1,0 +1,166 @@
+name: Ollama integration
+
+# End-to-end test of the Ollama provider (M11) against real services: an Ollama
+# server for self-hosted embeddings + generation, and pgvector for the corpus.
+# Pulling models is slow, so this runs on demand and when the provider code
+# changes — not on every push (the fast wiring checks live in test.yml).
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/ollama/**'
+      - 'src/embed/**'
+      - 'src/generate/**'
+      - 'src/utils/**'
+      - 'src/init/**'
+      - '.github/workflows/ollama-integration.yml'
+
+jobs:
+  ollama-e2e:
+    name: End-to-end (Ollama + pgvector)
+    runs-on: ubuntu-latest
+
+    services:
+      # Self-hosted LLM for embeddings + generation (issue #95).
+      ollama:
+        image: ollama/ollama:0.24.0
+        ports:
+          - 11434:11434
+      # Postgres with pgvector for the corpus (issue #95).
+      pgvector:
+        image: ankane/pgvector:latest
+        env:
+          POSTGRES_USER: beskar
+          POSTGRES_PASSWORD: beskar
+          POSTGRES_DB: beskar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U beskar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # Small models keep the pull + CPU inference within CI time budgets.
+      OLLAMA_EMBED_MODEL: nomic-embed-text
+      OLLAMA_GEN_MODEL: qwen2:0.5b
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Install pinned Rust toolchain (rust-toolchain.toml)
+        run: |
+          rustup show
+          cargo --version
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config postgresql-client
+
+      - name: Build
+        run: cargo build --locked --verbose
+
+      - name: Wait for Ollama to be ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
+              echo "Ollama is up"; curl -fsS http://127.0.0.1:11434/api/version; echo; break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/version >/dev/null || {
+            echo "::error::Ollama service never became ready"; exit 1; }
+
+      - name: Pull embedding + generation models
+        run: |
+          # /api/pull streams ndjson progress; keep the final status line.
+          echo "Pulling ${OLLAMA_EMBED_MODEL}..."
+          curl -fsS http://127.0.0.1:11434/api/pull -d "{\"name\":\"${OLLAMA_EMBED_MODEL}\"}" | tail -n1
+          echo "Pulling ${OLLAMA_GEN_MODEL}..."
+          curl -fsS http://127.0.0.1:11434/api/pull -d "{\"name\":\"${OLLAMA_GEN_MODEL}\"}" | tail -n1
+          echo "--- installed models ---"
+          curl -fsS http://127.0.0.1:11434/api/tags
+
+      - name: Configure beskar for Ollama (unattended) (OL.1)
+        run: |
+          BESKAR_EMBED_PROVIDER=ollama BESKAR_PROVIDER=ollama \
+          OLLAMA_HOST=http://127.0.0.1:11434 \
+          BESKAR_EMBED_MODEL="$OLLAMA_EMBED_MODEL" BESKAR_GENERATE_MODEL="$OLLAMA_GEN_MODEL" \
+          PGHOST=127.0.0.1 PGPORT=5432 PGUSER=beskar PGDATABASE=beskar PGPASSWORD=beskar \
+            ./target/debug/beskar init --non-interactive
+          # The pgvector container serves plain (non-TLS) Postgres in CI.
+          printf 'pgsslmode: disable\n' >> "$HOME/.config/beskar/config.yaml"
+          echo "--- config ---"; cat "$HOME/.config/beskar/config.yaml"
+
+      - name: Create corpus tables (enables pgvector)
+        run: ./target/debug/beskar db --create --table-name kb
+
+      - name: Ingest a document with Ollama embeddings (OL.2)
+        run: |
+          mkdir -p corpus
+          cat > corpus/beskar.md <<'EOF'
+          # Beskar
+          Beskar is a Rust CLI for building and querying a local RAG corpus backed by
+          PostgreSQL and the pgvector extension. With the Ollama provider, both the
+          embeddings and the generated answers come from a self-hosted model, so the
+          corpus text and queries never leave infrastructure you control.
+          EOF
+          ./target/debug/beskar document --path corpus --table-name kb
+
+      - name: Verify corpus meta records the Ollama embed model + dimension (E1.5)
+        run: |
+          export PGPASSWORD=beskar
+          meta=$(psql -h 127.0.0.1 -U beskar -d beskar -tAc \
+            "SELECT embed_model || ' dim=' || dim FROM kb_meta LIMIT 1")
+          echo "kb_meta: $meta"
+          echo "$meta" | grep -q "$OLLAMA_EMBED_MODEL" || {
+            echo "::error::kb_meta did not record the Ollama embed model"; exit 1; }
+          echo "$meta" | grep -q 'dim=[0-9]' || {
+            echo "::error::kb_meta did not record an embedding dimension"; exit 1; }
+
+      - name: Generate a grounded answer with Ollama generation + citations (OL.3)
+        run: |
+          out="$(./target/debug/beskar generate \
+            --query 'What database extension backs the corpus?' --table-name kb --top-k 3)"
+          echo "--- answer ---"; echo "$out"
+          echo "$out" | grep -q 'Sources:' || {
+            echo "::error::expected a Sources: citation footer"; exit 1; }
+          echo "$out" | grep -q 'beskar.md' || {
+            echo "::error::expected a citation to the ingested file"; exit 1; }
+
+      - name: Preflight names a missing model + pull command (OL.4)
+        run: |
+          # Re-init pointing the embed model at one that isn't pulled: the
+          # preflight check must fail with the model, host, and `ollama pull`.
+          BESKAR_EMBED_PROVIDER=ollama BESKAR_PROVIDER=ollama \
+          OLLAMA_HOST=http://127.0.0.1:11434 \
+          BESKAR_EMBED_MODEL=definitely-not-pulled \
+          PGHOST=127.0.0.1 PGPORT=5432 PGUSER=beskar PGDATABASE=beskar PGPASSWORD=beskar \
+            ./target/debug/beskar init --non-interactive
+          printf 'pgsslmode: disable\n' >> "$HOME/.config/beskar/config.yaml"
+          # A *new* document, so ingestion actually embeds (an unchanged file is
+          # skipped before embedding by the change-detection hash).
+          mkdir -p corpus-missing
+          echo "A fresh note that forces a fresh embedding call." > corpus-missing/new.md
+          set +e
+          out="$(./target/debug/beskar document --path corpus-missing --table-name kb 2>&1)"; code=$?
+          set -e
+          echo "$out"
+          [ "$code" -ne 0 ] || { echo "::error::a missing embed model should fail"; exit 1; }
+          echo "$out" | grep -q 'ollama pull definitely-not-pulled' || {
+            echo "::error::missing-model error should name the pull command"; exit 1; }

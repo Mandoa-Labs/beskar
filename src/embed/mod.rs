@@ -1,5 +1,6 @@
-//! Embeddings, across OpenAI, OpenAI-compatible, and Azure OpenAI endpoints
-//! (PRD §6.2 E1.4). All traffic goes through the egress-controlled HTTP client.
+//! Embeddings, across OpenAI, OpenAI-compatible, Azure OpenAI, and Ollama
+//! endpoints (PRD §6.2 E1.4). All traffic goes through the egress-controlled
+//! HTTP client.
 
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -20,6 +21,12 @@ pub fn embed_one(config: &Config, text: &str) -> Result<Vec<f32>> {
 }
 
 fn embed(endpoint: &Endpoint, http: &HttpClient, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+    // Ollama (PRD §6.2 E1.4): self-hosted embeddings against the configured host,
+    // with its own request/response shape and model preflight (OL.2/OL.4).
+    if endpoint.provider == "ollama" {
+        return crate::ollama::embed(http, &endpoint.base_url, &endpoint.model, inputs);
+    }
+
     let (url, request) = match endpoint.provider.as_str() {
         "openai" | "openai-compatible" => {
             let url = format!("{}/embeddings", endpoint.base_url);
